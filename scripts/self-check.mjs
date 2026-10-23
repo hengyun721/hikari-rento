@@ -136,6 +136,13 @@ check('character.json: few-shot examples are short and well-formed',
       typeof item.line === 'string' && item.line.length <= 60));
 check('character.json: conversation discipline forbids stage directions',
   character.sections.conversation.includes('不要描写任何动作'));
+// 招牌台词的场合约束：防止「Rock 'n' roll！」再次变成通用句号。
+check('character.json: closer lines are context-limited',
+  character.sections.core.includes('只有战斗或演出收场') &&
+    character.sections.speech.includes('不是每条回复的句号'));
+check('character.json: speech pools carry usage labels',
+  Object.keys(character.speechPools ?? {}).some((k) => k.includes('技术问答别用')) &&
+    Object.keys(character.speechPools ?? {}).some((k) => k.includes('只在真正动手')));
 
 // --------------------------------------------------------------------------
 // generated plugin

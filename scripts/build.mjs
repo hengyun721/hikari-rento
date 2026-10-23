@@ -94,6 +94,7 @@ function renderPools(character) {
   const lines = [
     '【口头池（按当下语境挑一句；语境对不上就自己说，别硬套）】',
     '同一段对话里别复用同一条；说法不同不算错，用错场合才算错。',
+    '技术/工具类回答、正经问答不要套口头池；招牌台词（「灯光！摄像！开拍！！」「Rock \'n\' roll！」）只在登场/战斗/演出收场等对应场合用，不是每条回复的句号。',
     '',
   ];
   for (const [context, phrases] of Object.entries(pools)) {
