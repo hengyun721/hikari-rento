@@ -64,8 +64,14 @@ async function* textStream() {
 
 const editedContext = {
   llm: {
+    calls: 0,
     async *stream() {
-      yield { type: 'text-delta', index: 0, text: '搞定了。' };
+      this.calls += 1;
+      if (this.calls === 1) {
+        yield { type: 'text-delta', index: 0, text: '搞定了。' };
+      } else {
+        yield { type: 'text-delta', index: 0, text: 'PASS' };
+      }
       yield { type: 'finish', reason: { kind: 'stop' } };
     }
   }
@@ -94,6 +100,32 @@ for await (const chunk of voice.wrapFinalAnswer(
 }
 assert.ok(passthrough.some((chunk) => chunk.type === 'tool-call-delta'));
 assert.ok(passthrough.some((chunk) => chunk.type === 'text-delta' && chunk.text === '先查一下。'));
+
+const subagent = [];
+for await (const chunk of voice.wrapFinalAnswer(
+  { agents: { roots: () => [{ id: 'root' }] }, llm: { async *stream() { throw new Error('editor must not run for subagents'); } } },
+  { sessionId: 'child' },
+  textStream
+)) {
+  subagent.push(chunk);
+}
+assert.ok(subagent.some((chunk) => chunk.type === 'text-delta' && chunk.text === '已完成。'));
+
+const verifierCtx = {
+  llm: {
+    async *stream() {
+      yield { type: 'text-delta', index: 0, text: 'PASS' };
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    }
+  }
+};
+assert.equal(await voice.verifyRewrite(verifierCtx, {}, '原文', '改写'), true);
+assert.equal(await voice.verifyRewrite(
+  { llm: { async *stream() { yield { type: 'text-delta', index: 0, text: 'FAIL' }; yield { type: 'finish', reason: { kind: 'stop' } }; } } },
+  {},
+  '原文',
+  '改写'
+), false);
 
 const sections = [];
 const listeners = [];

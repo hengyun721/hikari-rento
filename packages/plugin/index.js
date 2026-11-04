@@ -25,8 +25,8 @@ import { fileURLToPath } from 'node:url';
 /** Cordis 插件名。 */
 export const name = 'character-hikari-rento';
 
-/** 系统提示词 + 最终回答编辑。 */
-export const inject = ['systemPrompt', 'llm'];
+/** 系统提示词 + 最终回答编辑 + 根会话判定。 */
+export const inject = ['systemPrompt', 'llm', 'agents'];
 
 /** 角色定义（由 character.json 生成，勿手改；改 character.json 后重新生成）。 */
 const CHARACTER = {
@@ -309,6 +309,13 @@ const VOICE_RULES = [
   '只输出改写后的回答。'
 ].join('\n');
 
+const FACT_CHECK_RULES = [
+  '你是事实校验器，不是编辑。比较下面两段文本。',
+  '只输出 PASS 或 FAIL，不要解释。',
+  '出现以下任一情况就输出 FAIL：新增、删除或改变事实、数字、路径、命令、代码、文件名、结论、步骤、风险、警告、关系或不确定性。',
+  '只有文风、措辞、语气变化，事实完全一致时才输出 PASS。'
+].join('\n');
+
 /**
  * 把最终回答里的事实性片段替换成占位符，避免编辑模型碰它们。
  * @param text - 原始最终回答。
@@ -416,6 +423,34 @@ export function buildEditorRequest(original, fewShotEnabled = true) {
   };
 }
 
+async function verifyRewrite(ctx, options, original, rewritten) {
+  if (typeof ctx.llm?.stream !== 'function') return false;
+  let raw = '';
+  try {
+    for await (const chunk of ctx.llm.stream({
+      provider: options.provider,
+      model: options.model,
+      system: FACT_CHECK_RULES,
+      messages: [{
+        role: 'user',
+        content: [{ type: 'text', text: `【原文】\n${original}\n\n【改写】\n${rewritten}` }]
+      }],
+      maxTokens: 64,
+      signal: options.signal
+    })) {
+      if (chunk.type === 'tool-call-delta') return false;
+      if (chunk.type === 'text-delta') raw += chunk.text;
+      if (chunk.type === 'finish') {
+        if (chunk.reason?.kind !== 'stop') return false;
+        break;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return /^\s*PASS\b/i.test(raw.trim());
+}
+
 async function editFinalAnswer(ctx, options, original, fewShotEnabled) {
   if (typeof ctx.llm?.stream !== 'function') return null;
   const { system, user, protectedData } = buildEditorRequest(original, fewShotEnabled);
@@ -447,13 +482,26 @@ async function editFinalAnswer(ctx, options, original, fewShotEnabled) {
     return null;
   }
   const restored = restoreText(raw.trim(), protectedData);
-  return restored !== null && validateRewrite(original, restored) ? restored : null;
+  if (restored === null || !validateRewrite(original, restored)) return null;
+  return (await verifyRewrite(ctx, options, original, restored)) ? restored : null;
 }
 
 function isTextChunk(chunk) {
   return (chunk.type === 'block-start' && chunk.blockType === 'text') ||
     chunk.type === 'text-delta' ||
     (chunk.type === 'block-end' && chunk.block?.type === 'text');
+}
+
+function isRootSession(ctx, sessionId) {
+  const agents = ctx.agents;
+  if (!agents || typeof agents.roots !== 'function') return true;
+  try {
+    const roots = agents.roots();
+    if (!Array.isArray(roots) || roots.length === 0) return true;
+    return roots.some((agent) => agent?.id === sessionId || agent?.session?.id === sessionId);
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -465,6 +513,7 @@ function isTextChunk(chunk) {
  */
 function wrapFinalAnswer(ctx, options, next, fewShotEnabled) {
   if (options.sessionId === undefined || options.purpose !== undefined) return next();
+  if (!isRootSession(ctx, options.sessionId)) return next();
   return (async function* () {
     const pendingText = [];
     const terminal = [];
@@ -605,6 +654,7 @@ export const voice = {
   renderWorkPolicy,
   renderVoiceGuide,
   buildEditorRequest,
+  verifyRewrite,
   wrapFinalAnswer
 };
 

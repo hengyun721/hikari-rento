@@ -32,6 +32,7 @@
                    ├─ protectText：保护数字、路径、代码、URL、文件名
                    ├─ ctx.llm.stream：用同一 provider/model 做文风编辑
                    ├─ restoreText + validateRewrite：失败就回退原文
+                   ├─ 事实校验调用：PASS 才采用，否则回退原文
                    └─ 输出改写后的文本块
 ```
 
