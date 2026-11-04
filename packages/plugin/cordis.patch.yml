@@ -2,22 +2,17 @@
 #
 # 本补丁做两件事：
 #   1. 插入一个 agent preset：
-#        character-standard —— 插件清单与官方 standard preset 逐行一致（对齐 DSH 0.2.1-rc.2），
-#                              只把人设行 @deepseek-ai/dsh-persona 换成本插件，并启用「档案调用」路由（detail: full）。
+#        character-standard —— 插件清单与官方 standard preset 逐行一致（对齐 DSH 0.2.2-rc.1），
+#                              只把官方 persona 行换成本插件的工作层策略。
 #   2. 在 preset 里挂载本包的 index.js（hikari-rento），
-#      它把 character.json 里的人设段落注册为该 preset 作用域的
-#      `deployment:persona-prefix`，从而遮蔽部署级人设 —— 会话身份就是恋兔光。
+#      工作层保持中立；最终回答由 `llm/stream` 文风编辑转换成恋兔光口吻。
 #
-# 【维护】下面的行抄自 DSH 0.2.1-rc.2 的 `presets/standard.patch.yml`。
+# 【维护】下面的行抄自 DSH 0.2.2-rc.1 的 `presets/standard.patch.yml`。
 # 宿主升级后 standard 会变，这份手抄件不会自己跟着变 —— 每次跟着 DSH 升级对一遍。
 #
-# 曾经的第二个 preset（character-pure，纯扮演、不带工具）已删除：
-# 它没有文件读取工具，就没法按路由去翻 references/，只剩半套人设可用。
-#
 # 【重要】这里刻意不挂载 @deepseek-ai/dsh-persona。
-# 那一行自己就会注册 `deployment:persona-prefix`，而本插件也注册同一个段落名，
-# 同一作用域内重名会被提示词注册表直接判为 agent-preset/invalid。
-# 注册人设段落这件事只由本插件一行负责。
+# 本插件不再把人设塞进工作层，也就不需要遮蔽部署级 persona。
+# 最终回答的文风由插件在 `llm/stream` 的纯文本分支处理。
 #
 # 不想让它成为默认？删掉本文件最后那一段 `- id: agent-preset-registry`，
 # 然后在会话的「Agent 预设」选择器里手动选「角色：恋兔光」。
@@ -30,17 +25,17 @@
       config:
         id: character-standard
         name: 角色：恋兔光
-        description: 工作过程保持正常工程语气，最终回答转换为恋兔光口吻；工具与 standard 预设完全一致，剧情强关联问题按路由读 references/。
+        description: 工作过程中立、按工具与事实执行；最终聊天回答由文风层转换成恋兔光口吻，交付文件与工具参数不受影响。
         order: 5
         plugins:
-          # 角色模仿插件：注册 deployment:persona-prefix，会话身份即恋兔光。
-          # 不要再挂 @deepseek-ai/dsh-persona，那会与本节重名。
+          # 角色模仿插件：工作层策略 + 最终回答文风编辑。
           - id: character-hikari-rento
             name: 'hikari-rento'
             config:
               detail: full
               fewShotEnabled: true
               overrideIdentity: true
+              identityText: You are an AI assistant.
           # 以下与官方 standard preset 一一对应
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
@@ -56,6 +51,8 @@
             disabled: !!js process.platform !== 'win32'
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              applyPatch: false
           - id: tool-fs-search
             name: '@deepseek-ai/dsh-tool-fs-search'
             config:
@@ -118,14 +115,13 @@
             config:
               - id: tool-subagent-control
                 name: '@deepseek-ai/dsh-tool-subagent-control'
-              - id: tool-subagent-list-agents
-                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
               - id: tool-subagent
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: spawn
                   toolName: subagent
-                  modelSelectionSettings: true
+                  modelSelection: true
+                  modelDiscovery: true
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
@@ -152,7 +148,7 @@
             name: '@deepseek-ai/dsh-tool-present'
           - id: tool-plugin-manager
             name: '@deepseek-ai/dsh-plugin-manager/tools'
-            disabled: true
+            disabled: !!js "!ctx.get('profileContext')"
           - id: tool-plugin-market
             name: '@deepseek-ai/dsh-plugin-market/tools'
             disabled: true

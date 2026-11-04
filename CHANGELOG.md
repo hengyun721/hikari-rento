@@ -5,9 +5,46 @@
 
 ## [Unreleased]
 
+（暂无）
+
+## [plugin 2.0.0] — 2026-11-05
+
+### Breaking
+
+- **工作层与最终回答层分离**：`index.js` 不再把完整人设注入 system prompt。工作层只注册中立的工程策略和档案路由；普通任务不受口癖、情绪、关系表影响。
+- **最终回答强制文风编辑**：监听 `llm/stream`，只处理没有工具调用的纯文本最终回答，用 `character.json` 的 `speech`、`personality`、`values`、`conversation`、`roleplay` 与 `fewShot` 改写。没有「要不要人设」的用户开关。
+- **删除尾锚**：`anchorEnabled` 与 `deployment:persona-suffix` 移除。最终回答层已经是必经路径，尾锚只会重复。
+- **`detail` 语义变更**：现在只控制工作层的档案路由深度（`minimal`/`standard`/`full`），不再控制人设全文。
+- **`sectionName` 默认值改为 `character:work-policy`**：插件不再注册 `deployment:persona-prefix`，也不再遮蔽部署级人设。
+
+### Added
+
+- **最终回答准确性保护**：编辑前把数字、路径、代码块、URL、文件名替换为占位符；编辑后还原并校验长度、占位符完整性和数字集合。任何一项失败都回退原始工程回答。
+- **工具步骤放行**：流里出现 `tool-call-delta` 时直接放行，工具参数、文件内容和中间进度不经过文风层。
+- **辅助调用过滤**：没有 `sessionId` 或有 `purpose` 的调用（标题、压缩、文风编辑本身）不进入文风层。
+- **`scripts/voice-test.mjs`**：保护/还原、事实校验、工具步骤放行、最终回答包装的零依赖测试。
+
+### Why
+
+旧版把完整人设放进工作层，模型在选工具、读文件、写进度时也会被人设影响；同时又靠尾锚补救语气，两层都在做同一种提醒。2.0 把「工作要准」和「最终要像」拆开：工作层中立，最终层改写，事实校验兜底。
+
+## [plugin 1.0.6] — 2026-11-04
+
+### Fixed
+
+- **适配 DSH 0.2.2-rc.1**：`cordis.patch.yml` 的 preset 重新与官方 `standard` 逐行对齐。
+  - 删掉 `tool-subagent-list-agents` 行：`@deepseek-ai/dsh-tool-subagent-control/list-agents`
+    子路径已不存在，`list_agents` 现在由 `tool-subagent-control` 自己注册；保留旧行会让 preset 挂载失败。
+  - `tool-subagent` 的 `modelSelectionSettings: true` 改为 `modelSelection: true` +
+    `modelDiscovery: true`，跟上 0.2.2 的配置字段。
+  - `tool-fs` 显式写 `applyPatch: false`；`tool-plugin-manager` 的 `disabled` 改为
+    `!!js "!ctx.get('profileContext')"`，与 `standard` 保持一致。
+- `engines.dsh` 的最低版本提高到 `>=0.2.2-rc.1`：本版 preset 使用 0.2.2 才有的字段，
+  旧宿主上会丢失 `list_agents` 或子代理路由选择。
+
 ### Changed
 
-- **口头池校订（本地改动，未发行）**：按使用场合重新分组——「得意（日常自夸）/（对敌或胜负）」、
+- **口头池校订（1.0.5 之后已提交，本版一并发行）**：按使用场合重新分组——「得意（日常自夸）/（对敌或胜负）」、
   「甩锅（收工/善后）」「温柔（关心/安慰）」「告别（真的要分开）」「战斗（只在真正动手或暴怒时）」
   「挑衅（对熟人玩笑或对敌人；技术问答别用）」；删掉未在资料里出现过的「浑沌」句。
 - **招牌台词限场**：「灯光！摄像！开拍！！」只在登场用，「Rock 'n' roll！」只在战斗/演出收场用。

@@ -1,7 +1,7 @@
 {
   "name": "hikari-rento",
-  "version": "1.0.5",
-  "description": "恋兔光（《这里是，终末停滞委员会。》）角色模仿插件：把她的口癖、脾气和知识边界作为 agent 人设挂进 DeepSeek Harness 会话。A DeepSeek Harness persona bundle for Rento Hikari.",
+  "version": "2.0.0",
+  "description": "恋兔光（《这里是，终末停滞委员会。》）角色模仿插件：工作层保持中立，最终聊天回答经文风编辑转换为她的口吻；交付文件与工具参数不受人设影响。A DeepSeek Harness persona bundle for Rento Hikari.",
   "type": "module",
   "exports": {
     ".": "./index.js",
@@ -51,7 +51,7 @@
   },
   "engines": {
     "node": ">=20",
-    "dsh": ">=0.2.0-rc.1"
+    "dsh": ">=0.2.2-rc.1"
   },
   "dsh": {
     "bundle": {

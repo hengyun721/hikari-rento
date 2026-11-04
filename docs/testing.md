@@ -14,7 +14,7 @@ npm run verify
 |---|---|
 | `npm run build` | `character.json` → 插件包与技能包的全部产物 |
 | `npm run check` | 重算并逐个比对两个包的产物（不一致即失败） |
-| `npm test` | `scripts/self-check.mjs`，86 条零依赖结构自检 |
+| `npm test` | `scripts/self-check.mjs` + `scripts/voice-test.mjs`：结构自检 + 文风层保护/校验测试 |
 | `npm run privacy` | 扫本机绝对路径、回环地址、令牌、邮箱与内部目录名 |
 
 ## 自检覆盖什么

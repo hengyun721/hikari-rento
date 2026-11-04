@@ -25,8 +25,8 @@ versions, separate tags, separate releases. Neither is an artifact of the other.
 | | [`hikari-rento`](packages/plugin) | [`hikari-rento-skill`](packages/skill) |
 |---|---|---|
 | What | DeepSeek Harness **bundle plugin** | Portable **skill** package |
-| How it loads | Declares an agent preset; **replaces** the session persona | The host loads it on demand; **lends** a voice |
-| Tools | Row-for-row copy of the official `standard` preset (aligned with DSH 0.2.1-rc.2) | Whatever the host provides |
+| How it loads | Declares an agent preset; the work layer stays neutral and only the final chat answer is voiced | The host loads it on demand; **lends** a voice |
+| Tools | Row-for-row copy of the official `standard` preset (aligned with DSH 0.2.2-rc.1) | Whatever the host provides |
 | Install | Plugin manager (local folder / tgz / npm) | Copy the folder / unpack the `.tgz` |
 | Tag | `plugin-v*` | `skill-v*` |
 
@@ -43,8 +43,8 @@ versions, separate tags, separate releases. Neither is an artifact of the other.
 
 **tgz**: run `npm run pack:plugin` for `dist/hikari-rento-<version>.tgz`, or use the release asset.
 
-**npm (published)**: the plugin is on the registry as [`hikari-rento@1.0.3`](https://www.npmjs.com/package/hikari-rento).
-Enter `hikari-rento` in the plugin manager, or `hikari-rento@1.0.3` to pin the version.
+**npm**: the plugin is on the registry as [`hikari-rento`](https://www.npmjs.com/package/hikari-rento).
+Check `npm view hikari-rento version` for whether 2.0.0 is published; otherwise use the local directory or tgz.
 
 Restart the client afterwards, then **open a new session**. See [the install guide](docs/install.md).
 
@@ -68,7 +68,7 @@ Switching the preset inside an existing session hits
 
 | Capability | Detail |
 |---|---|
-| **Replaces the session persona** | Registers `deployment:persona-prefix`, shadowing the preset's deployment persona |
+| **Neutral work layer** | Normal tasks run on tools, files, tests and facts; no catchphrases, emotions, or relationship tables in the work prompt |
 | **Keeps the full toolset** | Files, shell, search, subagents, workflows, skills — same list as the official `standard` preset |
 | **Stays in character only at the end** | Engineering language while working; her voice, one to three sentences, for the answer |
 | **Knows what she does not know** | Every fact carries a 〔我〕experienced / 〔听〕heard / 〔不知〕unknown / 〔忘〕erased tag |
@@ -87,7 +87,7 @@ for new sessions. To opt out, delete the trailing `- id: agent-preset-registry` 
   config:
     detail: full              # minimal | standard | full
     fewShotEnabled: true
-    sectionName: deployment:persona-prefix
+    sectionName: character:work-policy
     sectionOrder: 0
     overrideIdentity: true
     identityText: You are an AI assistant.
@@ -96,32 +96,21 @@ for new sessions. To opt out, delete the trailing `- id: agent-preset-registry` 
 
 | Field | Default | Meaning |
 |---|---|---|
-| `detail` | `standard` | Prompt verbosity; this bundle ships `full` |
-| `fewShotEnabled` | `true` | Append 15 short few-shot lines |
-| `sectionName` | `deployment:persona-prefix` | Section name. The default **shadows** the deployment persona; change it only when mounting globally |
-| `sectionOrder` | `0` | `0` puts her first; `10150` appends her at the end instead |
-| `anchorEnabled` | `true` | Appends a tail anchor (`deployment:persona-suffix`) so a long task cannot drift out of voice |
-| `overrideIdentity` | `true` | Shadows DSH's `harness:identity`. Some third-party relay services fingerprint fixed sentences in the system prompt and replace the whole system message with a neutral one, dropping the persona — a common relay issue, not a DSH problem. Set `false` when mounting globally |
+| `detail` | `standard` | Work-layer archive routing depth; this bundle ships `full` |
+| `fewShotEnabled` | `true` | Append few-shot lines to the final-answer voice editor |
+| `sectionName` | `character:work-policy` | Work-layer section name; no longer shadows the deployment persona |
+| `sectionOrder` | `0` | Work-layer section order |
+| `overrideIdentity` | `true` | Shadows DSH's `harness:identity`. Some third-party relay services fingerprint fixed sentences in the system prompt and replace the whole system message with a neutral one — a common relay issue, not a DSH problem. Set `false` when mounting globally |
 | `identityText` | `You are an AI assistant.` | Replacement text for that section |
 | `includeRuntimeContext` | `true` | Turning this off also removes sandbox and approval guidance — all or nothing |
 
-### Detail levels
+### Work-layer detail levels
 
-| Section | Content | `minimal` | `standard` | `full` |
-|---|---|:---:|:---:|:---:|
-| `core` | Who she is, how she talks, prohibitions | ✓ | ✓ | ✓ |
-| `conversation` | Conversation discipline | ✓ | ✓ | ✓ |
-| `speech` | Speech-pattern cheat sheet | | ✓ | ✓ |
-| `personality` | Personality, weak points, the one trigger | | ✓ | ✓ |
-| `dimension` | Which continuity she is in, and where her knowledge stops | | ✓ | ✓ |
-| `relationships` | Relationship table across allies, schools, organisations | | ✓ | ✓ |
-| `values` | Values | | | ✓ |
-| `roleplay` | How to act while doing agent work | | | ✓ |
-| `retrieval` | Which reference file answers which question | | | ✓ |
+`detail` now only controls archive routing in the neutral work prompt; the final-answer voice editor is always on. `minimal` adds no archive routing, `standard` adds `references/index.md`, and `full` adds the archive discipline.
 
 ## Reference routing
 
-`full` appends a routing paragraph; only four kinds of questions go look something up.
+`full` adds a routing paragraph to the neutral work prompt; only four kinds of questions go look something up.
 
 | Question | File |
 |---|---|

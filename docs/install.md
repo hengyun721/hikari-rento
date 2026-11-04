@@ -14,7 +14,7 @@
 
 | | |
 |---|---|
-| DeepSeek Harness | **≥ 0.2.0-rc.1**（本包声明的最低版本） |
+| DeepSeek Harness | **≥ 0.2.2-rc.1**（本包声明的最低版本） |
 | Node | ≥ 20（只影响本地构建；装了插件本身不需要 Node） |
 | 权限 | 安装 bundle 会在 Host 进程里执行插件代码，需要**完全权限**或一次批准 |
 
@@ -40,13 +40,13 @@ npm run pack:plugin   # 产出 dist/hikari-rento-<version>.tgz
 
 ## 方式三：从 npm（已发布）
 
-`hikari-rento` 已在 registry 上，当前 **1.0.3**。在 DSH 里 **设置 → 插件 → 安装** 填：
+本地包版本已到 **2.0.0**。是否已发布到 npm 以 `npm view hikari-rento version` 为准；未发布时用本地目录或 tgz。在 DSH 里 **设置 → 插件 → 安装** 填：
 
 ```
 hikari-rento
 ```
 
-想锁版本就填 `hikari-rento@1.0.3`。填之前可以确认一下注册表：
+想锁版本就填 `hikari-rento@2.0.0`。填之前可以确认一下注册表：
 
 ```bash
 npm view hikari-rento version

@@ -225,7 +225,7 @@ function renderPluginReadme(character, version) {
   return `# hikari-rento
 
 ${character.name}（《这里是，终末停滞委员会。》）的 **DeepSeek Harness 插件**。
-装上之后，新会话里说话的人就是她。
+工作层保持中立；最终聊天回答由文风层转换成她的口吻，交付文件与工具参数不受影响。
 
 > 这是 monorepo [hikari-rento](${REPO_URL}) 里的**插件包**。
 > 完整说明、配置项、素材归属与姊妹项目（skill 版）见仓库主页。
@@ -237,7 +237,7 @@ ${character.name}（《这里是，终末停滞委员会。》）的 **DeepSeek 
 
 - **本地目录**：DSH → **设置 → 插件 → 安装本地 bundle** → 选本目录
 - **tgz**：装 Release 里的 \`hikari-rento-${version}.tgz\`
-- **npm**：已发布，在插件管理器里填 \`hikari-rento\`（版本 ${version}）；锁版本就写 \`hikari-rento@${version}\`
+- **npm**：在插件管理器里填 \`hikari-rento\`；是否已发布 ${version} 以 \`npm view hikari-rento version\` 为准。未发布时用本地目录或 tgz
 
 装完**重启客户端**，并且**新建一个会话**（不要在旧会话里切 preset）。
 
@@ -249,13 +249,18 @@ ${character.name}（《这里是，终末停滞委员会。》）的 **DeepSeek 
   config:
     detail: full              # minimal | standard | full
     fewShotEnabled: true
-    sectionName: deployment:persona-prefix
+    sectionName: character:work-policy
     sectionOrder: 0
-    anchorEnabled: true
     overrideIdentity: true
     identityText: You are an AI assistant.
     includeRuntimeContext: true
 \`\`\`
+
+## 工作方式
+
+- **工作层**：普通任务按工具、文件、测试结果和事实执行；不把口癖、情绪、关系表塞进工作过程。
+- **最终回答层**：\`llm/stream\` 只处理没有工具调用的纯文本最终回答；工具参数、文件内容、代码和中间进度不经过文风编辑。
+- **没有开关**：文风编辑默认始终开启；改写前保护数字、路径、代码、URL、文件名，失败就回退原始工程回答。
 
 ## 这个包里有什么
 

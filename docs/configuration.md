@@ -8,7 +8,7 @@
   config:
     detail: full              # minimal | standard | full
     fewShotEnabled: true
-    sectionName: deployment:persona-prefix
+    sectionName: character:work-policy
     sectionOrder: 0
     overrideIdentity: true
     identityText: You are an AI assistant.
@@ -19,35 +19,41 @@
 
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `detail` | `'minimal' \| 'standard' \| 'full'` | `standard` | 提示词详细度。非法值会在激活时被 Config 校验拒绝 |
-| `fewShotEnabled` | boolean | `true` | 是否附加 `fewShot` 里的示例台词 |
-| `sectionName` | string | `deployment:persona-prefix` | 注册到提示词注册表的段落名 |
-| `sectionOrder` | number | `0` | 段落排序 |
-| `anchorEnabled` | boolean | `true` | 是否追加末尾的「尾锚」段（`deployment:persona-suffix`） |
+| `detail` | `'minimal' \| 'standard' \| 'full'` | `standard` | **工作层**的档案路由深度。非法值会在激活时被 Config 校验拒绝 |
+| `fewShotEnabled` | boolean | `true` | 文风编辑是否附加 `fewShot` 里的示例台词；只影响最终回答的语气 |
+| `sectionName` | string | `character:work-policy` | 工作层策略注册到提示词注册表的段落名 |
+| `sectionOrder` | number | `0` | 工作层段落排序 |
 | `overrideIdentity` | boolean | `true` | 是否遮蔽 DSH 自带的 `harness:identity`。见下方「身份段与上游指纹」 |
-| `identityText` | string | `You are an AI assistant.` | 遮蔽后的身份段文案 |
+| `identityText` | string | `You are an AI assistant.` | 遮蔽后的身份段文案；默认中性 |
 | `includeRuntimeContext` | boolean | `true` | 是否保留运行时上下文快照 |
+
+## 2.0 的工作方式
+
+插件分成两层，**没有「要不要人设」的开关**：
+
+1. **工作层**：中立工程策略。普通任务按工具、文件、测试结果和事实执行；不把口癖、情绪、关系表塞进工作过程。
+2. **最终回答层**：监听 `llm/stream`，只处理**没有工具调用、只有文本**的最终回答；把文字改写成恋兔光口吻。工具参数、文件内容、代码和中间进度都不经过这一层。
+
+文风编辑默认始终开启。改写前会保护数字、路径、代码块、URL 和文件名；编辑后校验，异常就回退原始工程回答。**准确性优先于人设。**
 
 ## `detail` 到底差多少
 
-| 级别 | 包含段落 | 大概字符量 | 适合 |
-|---|---|---|---|
-| `minimal` | `core` + `conversation` | ≈ 3.9k | 只要语气，不想占提示词 |
-| `standard` | 再加 `speech`、`personality`、`dimension`、`relationships` | ≈ 10.6k | 聊天为主 |
-| `full` | 再加 `values`、`roleplay`、`retrieval` | ≈ 12k | **本包 preset 使用**，干活 + 聊天，能翻参考档 |
+`detail` 现在只影响工作层的档案路由：
 
-`conversation` 在每一档里都有，这是刻意的：**不管哪一档，她都得只说话、说得短、认识自己的人。**
+| 级别 | 工作层内容 | 适合 |
+|---|---|---|
+| `minimal` | 中立工程策略；不附档案路由 | 完全不需要查设定 |
+| `standard` | 中立工程策略 + `references/index.md` 路由 | 聊天为主 |
+| `full` | 再追加档案纪律（标签优先、不在场不认领、查不到就说不知道） | **本包 preset 使用**，干活 + 聊天 |
 
-## `sectionName` 的坑
+人设口吻由文风编辑使用 `character.json` 里的 `speech`、`personality`、`values`、`conversation`、`roleplay` 和 `fewShot` 生成；**不随 `detail` 变化**，也没有关掉人设的配置。
 
-默认值 `deployment:persona-prefix` 会**遮蔽**该 preset 的部署级人设 —— 这就是「她成为会话身份」的机制。
+## `sectionName` 与全局挂载
 
-但它同时意味着：**在同一个作用域里不能有第二个插件注册同名段落**。所以：
+默认值 `character:work-policy` 只是工作层策略的段落名，不再遮蔽部署级人设。
 
-- 挂在 **preset 里**（本包的做法）：保持默认。**不要**同时挂 `@deepseek-ai/dsh-persona`，
-  它自己也注册 `deployment:persona-prefix`，重名会被提示词注册表判为 `agent-preset/invalid`。
-- 挂在 **全局**：把 `sectionName` 改成别的名字（如 `character:hikari-rento`），
-  她会作为附加段落出现在提示词末尾，而不是替换身份。
+- 挂在 **preset 里**（本包的做法）：保持默认即可。
+- 挂在 **全局**：同一作用域内不能有同名段落；如果和其他插件冲突，换一个名字（如 `character:hikari-rento`）。这不是「替换身份」，只是附加一段工作策略。
 
 ## 身份段与中转风控
 
@@ -57,21 +63,16 @@ DSH 默认会在提示词最前面放一句自带的身份：
 You are an AI agent powered by DeepSeek Harness.
 ```
 
-不少第三方中转 / 代理服务会对 system 里的固定模板句做**逐字风控**（有的按「像不像官方客户端」判断）。
-这是中转的通病，不是 DSH 的问题。麻烦的是它命中后不会只丢那一句：中转会用自家的中性提示词
-替换**整段 system**，并在接下来一段时间里保持这个替换状态。于是模型只看到
-「You are a helpful assistant」，人设、口癖、关系表全部消失——表现就是「插件像没装一样 / 问人物关系说不知道」。
+不少第三方中转 / 代理服务会对 system 里的固定模板句做**逐字风控**。命中后它不会只丢那一句：中转会用自家的中性提示词替换**整段 system**，模型只看到「You are a helpful assistant」，工作层与最终回答层都会失效。
 
-插件默认开启 `overrideIdentity`，用一个作用域内的同名段（`harness:identity`）遮蔽原文，
-换成 `identityText`（默认 `You are an AI assistant.`）。人设段紧接着它，不再和它抢身份。
+插件默认开启 `overrideIdentity`，用同名段（`harness:identity`）遮蔽原文，换成 `identityText`（默认 `You are an AI assistant.`）。这是中性工作身份，不是角色扮演；角色语气由最终回答层处理。
 
 - 全局挂载时必须设 `overrideIdentity: false`：同一作用域不能有同名段。
 - 如果中转仍然风控，把 `identityText` 换一句更中性的（如 `You are a helpful assistant.`）。
 
-## `sectionOrder` 的用法
+## `sectionOrder`
 
-- `0`（默认）：提示词最前面的身份段落。
-- `10150`：变成末尾的附加段落。想让 DSH 原本的部署人设继续生效、只是「多一个她」时用这个。
+`0`（默认）把工作层放在提示词前面。它不再承担「尾锚」职责；2.0 已删除尾锚，因为最终回答层是必经路径，尾锚再喊一遍身份只会重复。
 
 ## `includeRuntimeContext`
 
@@ -95,8 +96,7 @@ You are an AI agent powered by DeepSeek Harness.
 
 ## 改角色本身
 
-配置只是开关，**人设内容在 `character.json`**。九个段落的用途见
-[README](../README.md#三个详细度)，改完执行：
+**人设内容在 `character.json`**；工作层策略和文风规则在 `scripts/index.template.js`。改完执行：
 
 ```bash
 npm run build

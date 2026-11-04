@@ -24,8 +24,8 @@
 | | [`hikari-rento`](packages/plugin) | [`hikari-rento-skill`](packages/skill) |
 |---|---|---|
 | 是什么 | DeepSeek Harness **bundle 插件** | 可移植 **skill** 包 |
-| 怎么加载 | 声明 agent preset，**替换**会话人设 | 宿主按需加载，**借**一副嗓子 |
-| 工具 | 与官方 `standard` preset 逐行一致（对齐 DSH 0.2.1-rc.2） | 用宿主自己的工具 |
+| 怎么加载 | 声明 agent preset，工作层保持中立，**只把最终聊天回答**交给文风层 | 宿主按需加载，**借**一副嗓子 |
+| 工具 | 与官方 `standard` preset 逐行一致（对齐 DSH 0.2.2-rc.1） | 用宿主自己的工具 |
 | 装法 | 插件管理器（本地目录 / tgz / npm） | 拷目录 / 解开 `.tgz` |
 | tag | `plugin-v*` | `skill-v*` |
 
@@ -41,8 +41,8 @@
 
 **tgz**：`npm run pack:plugin` 产出 `dist/hikari-rento-<version>.tgz`，或直接下 Release 附件，装它。
 
-**npm（已发布）**：插件在 registry 上是 [`hikari-rento@1.0.3`](https://www.npmjs.com/package/hikari-rento)。
-在插件管理器里填 `hikari-rento` 即可，想锁版本就填 `hikari-rento@1.0.3`。
+**npm**：插件在 registry 上是 [`hikari-rento`](https://www.npmjs.com/package/hikari-rento)。
+是否已发布到 2.0.0 以 `npm view hikari-rento version` 为准；未发布时请用本地目录或 tgz。
 
 装完**重启客户端**，然后**新建会话**。逐条排障见 [安装文档](docs/install.md)。
 
@@ -69,13 +69,14 @@ DSH 的 preset 注册表把「会话作用域 → preset 版本」记在一次�
 
 | 能力 | 说明 |
 |---|---|
-| **换掉会话身份** | 注册 `deployment:persona-prefix`，遮蔽该 preset 的部署级人设 —— 不是「模仿她」，是「她本人」 |
-| **干活能力不变** | preset 的工具清单逐行对照官方 `standard`：文件、终端、搜索、子 agent、工作流、skill 全都在 |
-| **只把最终回答入戏** | 读文件、跑命令、报错误用正常工程语气；交付时压缩成她的一到三句话 |
+| **工作层保持中立** | 普通任务按工具、文件、测试结果和事实执行；不把口癖、情绪、关系表塞进工作过程 |
+| **只改最终聊天回答** | `llm/stream` 只处理没有工具调用的纯文本回答；文件内容、代码、命令和工具参数不经过文风层 |
+| **文风编辑不是开关** | 最终回答会自动尝试转换成她的口吻；没有「要不要人设」的用户配置 |
+| **准确性优先** | 改写前保护数字、路径、代码、URL 和文件名；编辑后校验，异常就回退原始工程回答 |
+| **恋兔光问题才查档案** | 只有明确问角色、世界观、经历或关系时才读 `references/`；普通工作不打开档案 |
 | **知道什么、不知道什么** | 每条设定都带〔我〕亲历／〔听〕听说／〔不知〕／〔忘〕标签，越界就说不记得 |
 | **不认领别人的战绩** | 别处来的经历、别人打过的仗 —— 问到会纠正，而不是顺着演 |
 | **出场就往回收** | 默认一到两句，不写动作、不写括号旁白、不把招牌台词一整套念完 |
-| **口头有素材池** | 11 组按语境分好的短台词，挑一句走；不复用、不复读，语境错配才算错 |
 
 ## 配置
 
@@ -89,8 +90,8 @@ DSH 的 preset 注册表把「会话作用域 → preset 版本」记在一次�
   name: 'hikari-rento'
   config:
     detail: full              # minimal | standard | full
-    fewShotEnabled: true      # 是否附加示例台词
-    sectionName: deployment:persona-prefix
+    fewShotEnabled: true      # 文风编辑是否附示例台词
+    sectionName: character:work-policy
     sectionOrder: 0
     overrideIdentity: true
     identityText: You are an AI assistant.
@@ -99,34 +100,29 @@ DSH 的 preset 注册表把「会话作用域 → preset 版本」记在一次�
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `detail` | `standard` | 提示词详细度，见下表。本包的 preset 用 `full` |
-| `fewShotEnabled` | `true` | 附加 15 条**短**示例台词。嫌占 token 就关掉 |
-| `sectionName` | `deployment:persona-prefix` | 段落名。默认值会**遮蔽**部署级人设；**只有全局挂载时才需要改**成别的名字 |
-| `sectionOrder` | `0` | 放在提示词最前面；改成 `10150` 变成末尾的附加段落 |
-| `anchorEnabled` | `true` | 提示词末尾再加一段「尾锚」（`deployment:persona-suffix`）：长任务下把口吻拉回来 |
-| `overrideIdentity` | `true` | 遮蔽 DSH 自带的 `harness:identity`。一些第三方中转服务会对 system 里的固定模板句做逐字风控，命中后整段 system 会被换成中性提示词，人设全丢——这是中转的通病，不是 DSH 的问题。全局挂载必须设 `false` |
-| `identityText` | `You are an AI assistant.` | 遮蔽后的身份段文案 |
+| `detail` | `standard` | **工作层**的档案路由深度：`minimal` 只给核心策略，`standard` 加档案路由，`full` 再加档案纪律。不再控制人设全文 |
+| `fewShotEnabled` | `true` | 文风编辑是否附示例台词；关掉只影响最终回答的像不像，不影响工作准确性 |
+| `sectionName` | `character:work-policy` | 工作层段落名；不再遮蔽部署级人设，全局挂载也不需要改名 |
+| `sectionOrder` | `0` | 工作层段落排序值 |
+| `overrideIdentity` | `true` | 遮蔽 DSH 自带的 `harness:identity`；一些第三方中转会对固定模板句做逐字风控。全局挂载时同一作用域不能重名，必须设 `false` |
+| `identityText` | `You are an AI assistant.` | 遮蔽后的身份段文案；默认中性，最终回答由文风层处理 |
 | `includeRuntimeContext` | `true` | 关掉会连沙箱策略、审批策略一起移除（全有全无） |
 
-### 三个详细度
+### 工作层详细度
 
-| 段落 | 内容 | `minimal` | `standard` | `full` |
-|---|---|:---:|:---:|:---:|
-| `core` | 她是谁、怎么说话、是什么样的人、禁止项 | ✓ | ✓ | ✓ |
-| `conversation` | 对话纪律：不写动作、默认一到两句、口癖要有节制 | ✓ | ✓ | ✓ |
-| `speech` | 口癖速查表 | | ✓ | ✓ |
-| `personality` | 性格要点（外显／内里／软肋／破格条件） | | ✓ | ✓ |
-| `dimension` | 她的次元归属与知识边界：哪些场面她不在场 | | ✓ | ✓ |
-| `relationships` | 关系表：同伴／学校／卡乌斯／Corporations／组织／敌对／别次元 | | ✓ | ✓ |
-| `values` | 价值观 | | | ✓ |
-| `roleplay` | 在代理工作流里怎么演 | | | ✓ |
-| `retrieval` | 档案调用：四类问题分别读哪一份参考档 | | | ✓ |
+`detail` 现在只影响**工作层**：普通任务一律中立，只有恋兔光/世界观问题才按档案路由查资料。人设口吻由最终回答的文风层负责，不随 `detail` 变化。
 
-`conversation` 刻意放进 `minimal`：**不管哪一档，她都得只说话、说得短、认识自己的人。**
+| `detail` | 工作层内容 |
+|---|---|
+| `minimal` | 中立工程策略；不附档案路由 |
+| `standard` | 中立工程策略 + `references/index.md` 路由 |
+| `full` | 再追加档案纪律（标签优先、不在场不认领、查不到就说不知道） |
+
+完整人设仍保存在 `character.json`，文风编辑使用其中的口癖、性格、价值观、对话纪律和示例台词；关系表、世界设定只在档案模式使用。
 
 ## 档案调用（`references/`）
 
-`full` 会在提示词末尾附一段路由：常驻人设负责语气与常识，只有这四类问题才去翻档案。
+`full` 的工作层会附一段档案路由：普通工作不打开档案，只有这四类问题才去翻。
 
 | 问题类型 | 读哪份 |
 |---|---|
@@ -179,7 +175,7 @@ hikari-rento/
 ```bash
 npm run build      # character.json → 两个包的全部产物
 npm run check      # 产物是否与 character.json 同步
-npm test           # 零依赖结构自检（86 条，CI 同款）
+npm test           # 零依赖结构自检 + 文风层测试（CI 同款）
 npm run pack       # 打包 plugin 与 skill 到 dist/
 npm run privacy    # 扫本机路径、密钥、邮箱
 npm run verify     # check + test + privacy

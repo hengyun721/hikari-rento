@@ -1,19 +1,21 @@
 /**
  * 恋兔光（《这里是，终末停滞委员会。》）角色模仿插件 —— Host 半边。
  *
- * 它把一个「人设段落」注册到当前 agent 作用域的系统提示词里：
- *   - 用 preset 挂载时（推荐），段落名取 `deployment:persona-prefix`，
- *     于是它遮蔽该 preset 的部署级人设，恋兔光就是这次会话的身份；
- *   - 全局挂载时若沿用同一个段落名会与提示词注册表自身的人设相撞并明确报错，
- *     所以全局挂载请把 `sectionName` 改成别的名字（如 `character:hikari-rento`），
- *     段落会以附加段落的形式出现在提示词末尾。
+ * 2.0 起分成两层：
+ *   1. 工作层：system prompt 只放中立工程策略和「何时查档案」的路由，
+ *      不把口癖、情绪、关系表塞进工作过程。
+ *   2. 最终回答层：监听 `llm/stream`，只对「没有工具调用、只有文本」的最终回答
+ *      做一次文风编辑；工具参数、文件内容、中间进度都不经过这一层。
+ *
+ * 文风编辑不是开关：只要插件在，最终回答就会尝试改写；编辑失败或事实校验
+ * 不通过时回退原文，准确性优先。没有「要不要人设」的用户配置。
  *
  * 角色定义内嵌在本文件里（由 character.json 生成），因此插件不读取任何运行时文件、
  * 不依赖任何包，除 `@deepseek-ai/schemastery` 的 Config 校验外没有第三方依赖。
  *
- * 唯一的运行时 IO 是「档案目录」的路径（references/）：`detail: full` 会附上一段
- * 路由说明，告诉她在哪四类问题上该去读哪一份参考档；路径由 import.meta.url 在
- * 加载时算出来，所以插件装到哪个目录都成立。
+ * 唯一的运行时 IO 是「档案目录」的路径（references/）：工作层会告诉模型在哪四类
+ * 问题上该去读哪一份参考档；路径由 import.meta.url 在加载时算出来，所以插件装到
+ * 哪个目录都成立。
  *
  * @module hikari-rento
  */
@@ -23,8 +25,8 @@ import { fileURLToPath } from 'node:url';
 /** Cordis 插件名。 */
 export const name = 'character-hikari-rento';
 
-/** 本行贡献给提示词注册表，因此注入 systemPrompt。 */
-export const inject = ['systemPrompt'];
+/** 系统提示词 + 最终回答编辑。 */
+export const inject = ['systemPrompt', 'llm'];
 
 /** 角色定义（由 character.json 生成，勿手改；改 character.json 后重新生成）。 */
 const CHARACTER = {
@@ -124,7 +126,7 @@ const CHARACTER = {
   ]
 };
 
-/** 详细度预设 → 段落清单。 */
+/** 详细度预设 → 段落清单（保留给 renderCharacterPrompt 兼容使用）。 */
 const DETAIL_SECTIONS = {
   "full": [
     "core",
@@ -234,40 +236,337 @@ const FEW_SHOT = [
 /** 参考档案目录（references/）的绝对路径，随插件安装位置自动解析。 */
 const REFERENCES_DIR = fileURLToPath(new URL('./references/', import.meta.url));
 
-/** 运行时配置。 */
-export const Config = z.object({
-  /** 详细度：minimal 只给身份与对话纪律；standard 加口癖、性格、次元与关系表；full 再加价值观、DSH 扮演指示与档案调用路由。 */
-  detail: z.union(['minimal', 'standard', 'full']).default('standard'),
-  /** 是否附加「示例台词」段落。 */
-  fewShotEnabled: z.boolean().default(true),
-  /** 段落名。preset 挂载保持默认以遮蔽部署级人设；全局挂载请改成别的名字。 */
-  sectionName: z.string().default('deployment:persona-prefix'),
-  /** 段落排序值。默认与人设前缀同位，因此它是提示词最前面的身份段落。 */
-  sectionOrder: z.number().default(0),
-  /** 是否在提示词末尾再加一段「尾锚」（deployment:persona-suffix），长任务下把口吻拉回来。 */
-  anchorEnabled: z.boolean().default(true),
-  /**
-   * 是否遮蔽 DSH 自带的 `harness:identity` 段（默认 true）。
-   *
-   * 该段原文是 `You are an AI agent powered by DeepSeek Harness.`；部分上游网关会按这句
-   * 做指纹拦截（400 content_blocked），随后整段 system 被替换成中性提示词，人设全部丢失。
-   * 开启后改用 `identityText`，既避开指纹，也不再和「你是恋兔光」抢身份。
-   * 全局挂载（非 preset）时必须设为 false：同一作用域内同名段会判为重名。
-   */
-  overrideIdentity: z.boolean().default(true),
-  /** 遮蔽后的身份段文案。 */
-  identityText: z.string().default('You are an AI assistant.'),
-  /** 是否包含动态 runtime-context 快照（保留工具与沙箱策略时保持 true）。 */
-  includeRuntimeContext: z.boolean().default(true)
-});
+/** 工作层：默认中立，不把角色口吻带进工作过程。 */
+const WORK_POLICY = [
+  '你是一个中立的工程助手。默认按工具、文件、测试结果和事实工作。',
+  '普通任务不要使用恋兔光（恋兎ヒカリ）的口吻；不要在工具参数、文件内容、中间进度或普通工作回答里提及她。',
+  '只有当用户明确询问恋兔光／《这里是，终末停滞委员会。》的角色、世界观、经历或关系时，才读取档案：{{REFERENCES_DIR}}index.md 和命中的参考档，按档案回答；查不到就说“不知道”，不要编。',
+  '被问“你是谁”时，回答你是恋兔光（恋兎ヒカリ），其他细节按档案。',
+  '最终聊天回答会由独立文风层改写；你不需要在生成阶段模仿她的口吻。'
+].join('\n');
+
+const REFERENCE_GUIDE = [
+  '【档案路由】',
+  '档案目录：{{REFERENCES_DIR}}index.md。',
+  '只在人物、世界观、经历、关系或能力边界的问题上使用；普通工作任务不要打开档案。',
+  '先读 index.md 定位，只读命中的那一节，不要整份吞。'
+].join('\n');
+
+const FULL_REFERENCE_RULES = [
+  '【档案纪律】',
+  '标签压过档案：人设里标着〔不知〕的，即使档案里有旁证也不许说。',
+  '没在场的事绝不说“我打过”“我去过”“我记得”；只答自己半径内那一截，其余划出去。',
+  '查不到就直说不知道，不解释、不猜、不补设定。'
+].join('\n');
 
 /**
- * 把角色定义渲染成一段提示词文本。
- * @param detail - 详细度预设名。
- * @param fewShotEnabled - 是否附加示例台词。
- * @param referencesDir - 参考档案目录的绝对路径，默认随插件安装位置解析。
- * @returns 渲染后的段落文本。
+ * 把工作层策略渲染成系统提示词文本。
+ * @param detail - minimal 只给核心策略；standard 加档案路由；full 再加档案纪律。
+ * @param referencesDir - 参考档案目录的绝对路径。
+ * @returns 工作层提示词。
  */
+export function renderWorkPolicy(detail, referencesDir = REFERENCES_DIR) {
+  const level = detail === 'minimal' || detail === 'full' ? detail : 'standard';
+  const parts = [WORK_POLICY];
+  if (level !== 'minimal') parts.push(REFERENCE_GUIDE);
+  if (level === 'full') parts.push(FULL_REFERENCE_RULES);
+  return parts.join('\n\n').replaceAll('{{REFERENCES_DIR}}', referencesDir.replace(/\\/g, '/'));
+}
+
+/** 只负责「说话像她」的段落；不把关系表、世界设定塞进编辑提示。 */
+const VOICE_SECTIONS = ['speech', 'personality', 'values', 'conversation'];
+
+/**
+ * 渲染文风编辑用的声音指南。
+ * @param fewShotEnabled - 是否附上示例台词。
+ * @returns 声音指南文本。
+ */
+export function renderVoiceGuide(fewShotEnabled = true) {
+  const parts = ['你是恋兔光（恋兎ヒカリ）。'];
+  for (const sectionName of VOICE_SECTIONS) {
+    const section = CHARACTER.sections[sectionName];
+    if (section) parts.push(section);
+  }
+  if (fewShotEnabled && FEW_SHOT.length > 0) {
+    const examples = FEW_SHOT
+      .map((example) => `- （${example.situation}）${example.line}`)
+      .join('\n');
+    parts.push(`【示例台词】\n${examples}`);
+  }
+  return parts.join('\n\n');
+}
+
+const VOICE_RULES = [
+  '你是恋兔光的文风编辑，不是任务执行者。',
+  '输入是一段已经完成的最终回答。只改措辞、语气、节奏，让它在不改变事实的前提下像恋兔光。',
+  '硬规则：',
+  '- 不得新增、删除或改变任何事实、数字、路径、命令、代码、文件名、结论、步骤、风险、警告、引用。',
+  '- 原文里的 ⟦P0⟧ 形式是受保护片段，必须原样保留；不要改写、删除、移动或新增占位符。',
+  '- 保留 Markdown 结构、标题、列表、表格、代码块、链接。',
+  '- 不要解释自己在编辑，不要输出前言、后记或“作为恋兔光”之类的话。',
+  '- 这是最终回答，不是工具步骤；除代码、命令、路径等受保护片段外，正文都要用恋兔光口吻。',
+  '- 如果无法在不改变事实的情况下改写，原样输出输入。',
+  '只输出改写后的回答。'
+].join('\n');
+
+/**
+ * 把最终回答里的事实性片段替换成占位符，避免编辑模型碰它们。
+ * @param text - 原始最终回答。
+ * @returns 占位符文本、受保护片段与占位符前缀。
+ */
+export function protectText(text) {
+  let tag = '⟦P';
+  while (text.includes(tag)) tag += 'Q';
+  const patterns = [
+    /```[\s\S]*?```/g,
+    /`[^`\n]+`/g,
+    /https?:\/\/[^\s<>"'）)]+/g,
+    /[A-Za-z]:[\\/][^\s，。；：、）)]+/g,
+    /(?:~|\.{1,2})?\/[^\s，。；：、）)]+/g,
+    /\b[\w.-]+\.(?:md|json|jsonl|js|mjs|cjs|ts|tsx|jsx|py|go|rs|java|c|cc|cpp|h|hpp|cs|exe|zip|tar|gz|png|jpe?g|webp|svg|yaml|yml|toml|txt|csv|xlsx|docx|pdf)\b/gi,
+    /\b\d+(?:\.\d+)?%?\b/g
+  ];
+  const ranges = [];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      ranges.push([match.index, match.index + match[0].length]);
+    }
+  }
+  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const spans = [];
+  let out = '';
+  let cursor = 0;
+  for (const [start, end] of ranges) {
+    if (start < cursor) continue;
+    out += text.slice(cursor, start) + `${tag}${spans.length}⟧`;
+    spans.push(text.slice(start, end));
+    cursor = end;
+  }
+  out += text.slice(cursor);
+  return { text: out, spans, tag };
+}
+
+/**
+ * 还原受保护片段。
+ * @param text - 编辑后的占位符文本。
+ * @param protectedData - protectText() 的返回值。
+ * @returns 还原后的文本；占位符缺失或重复时返回 null。
+ */
+export function restoreText(text, protectedData) {
+  const { spans, tag } = protectedData;
+  const re = new RegExp(`${escapeRegExp(tag)}(\\d+)⟧`, 'g');
+  const seen = new Set();
+  let out = '';
+  let cursor = 0;
+  for (const match of text.matchAll(re)) {
+    const index = Number(match[1]);
+    if (!Number.isInteger(index) || index < 0 || index >= spans.length || seen.has(index)) return null;
+    seen.add(index);
+    out += text.slice(cursor, match.index) + spans[index];
+    cursor = match.index + match[0].length;
+  }
+  if (seen.size !== spans.length) return null;
+  return out + text.slice(cursor);
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function countNumbers(text) {
+  const counts = new Map();
+  for (const match of text.matchAll(/\b\d+(?:\.\d+)?%?\b/g)) {
+    counts.set(match[0], (counts.get(match[0]) || 0) + 1);
+  }
+  return counts;
+}
+
+/**
+ * 校验编辑结果：受保护片段已还原，长度没有离谱，且没有新增数字。
+ * @param original - 原始回答。
+ * @param rewritten - 还原后的改写。
+ * @returns 是否接受。
+ */
+export function validateRewrite(original, rewritten) {
+  if (typeof rewritten !== 'string' || !rewritten.trim()) return false;
+  const ratio = rewritten.length / Math.max(1, original.length);
+  if (ratio < 0.4 || ratio > 2.5) return false;
+  const before = countNumbers(original);
+  const after = countNumbers(rewritten);
+  if (before.size !== after.size) return false;
+  for (const [value, count] of before) {
+    if (after.get(value) !== count) return false;
+  }
+  if ((original.match(/```/g)?.length ?? 0) !== (rewritten.match(/```/g)?.length ?? 0)) return false;
+  return true;
+}
+
+/**
+ * 生成文风编辑请求。
+ * @param original - 原始最终回答。
+ * @param fewShotEnabled - 是否附示例台词。
+ * @returns system、user、受保护片段。
+ */
+export function buildEditorRequest(original, fewShotEnabled = true) {
+  const protectedData = protectText(original);
+  return {
+    system: `${VOICE_RULES}\n\n【恋兔光的声音】\n\n${renderVoiceGuide(fewShotEnabled)}`,
+    user: `【最终回答】\n${protectedData.text}`,
+    protectedData
+  };
+}
+
+async function editFinalAnswer(ctx, options, original, fewShotEnabled) {
+  if (typeof ctx.llm?.stream !== 'function') return null;
+  const { system, user, protectedData } = buildEditorRequest(original, fewShotEnabled);
+  let raw = '';
+  let sawDelta = false;
+  try {
+    for await (const chunk of ctx.llm.stream({
+      provider: options.provider,
+      model: options.model,
+      system,
+      messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
+      maxTokens: Math.min(16384, Math.max(512, Math.ceil(original.length * 1.5))),
+      signal: options.signal
+    })) {
+      if (chunk.type === 'tool-call-delta') return null;
+      if (chunk.type === 'text-delta') {
+        raw += chunk.text;
+        sawDelta = true;
+      }
+      if (chunk.type === 'block-end' && !sawDelta && chunk.block?.type === 'text') {
+        raw += chunk.block.text ?? '';
+      }
+      if (chunk.type === 'finish') {
+        if (chunk.reason?.kind !== 'stop') return null;
+        break;
+      }
+    }
+  } catch {
+    return null;
+  }
+  const restored = restoreText(raw.trim(), protectedData);
+  return restored !== null && validateRewrite(original, restored) ? restored : null;
+}
+
+function isTextChunk(chunk) {
+  return (chunk.type === 'block-start' && chunk.blockType === 'text') ||
+    chunk.type === 'text-delta' ||
+    (chunk.type === 'block-end' && chunk.block?.type === 'text');
+}
+
+/**
+ * 只改写「没有工具调用的纯文本最终回答」；工具步骤原样放行。
+ * @param ctx - Cordis 上下文。
+ * @param options - GenerateOptions。
+ * @param next - 下游 llm/stream。
+ * @returns 包装后的 chunk 流。
+ */
+function wrapFinalAnswer(ctx, options, next, fewShotEnabled) {
+  if (options.sessionId === undefined || options.purpose !== undefined) return next();
+  return (async function* () {
+    const pendingText = [];
+    const terminal = [];
+    let text = '';
+    let hasTool = false;
+    let passThrough = false;
+    let textIndex;
+    let maxIndex = -1;
+
+    for await (const chunk of next()) {
+      if (typeof chunk.index === 'number') maxIndex = Math.max(maxIndex, chunk.index);
+
+      if (passThrough) {
+        yield chunk;
+        continue;
+      }
+
+      if (chunk.type === 'tool-call-delta' ||
+        (chunk.type === 'block-start' && chunk.blockType === 'tool-call')) {
+        hasTool = true;
+        passThrough = true;
+        for (const pending of pendingText) yield pending;
+        pendingText.length = 0;
+        yield chunk;
+        continue;
+      }
+
+      if (chunk.type === 'usage' || chunk.type === 'finish') {
+        terminal.push(chunk);
+        continue;
+      }
+
+      if (isTextChunk(chunk)) {
+        pendingText.push(chunk);
+        if (chunk.type === 'text-delta') text += chunk.text;
+        if (chunk.type === 'block-end' && !text) text = chunk.block.text ?? '';
+        if (textIndex === undefined) textIndex = chunk.index;
+        continue;
+      }
+
+      yield chunk;
+    }
+
+    if (hasTool) {
+      for (const pending of pendingText) yield pending;
+      for (const chunk of terminal) yield chunk;
+      return;
+    }
+
+    if (!text.trim()) {
+      for (const pending of pendingText) yield pending;
+      for (const chunk of terminal) yield chunk;
+      return;
+    }
+
+    const edited = await editFinalAnswer(ctx, options, text, fewShotEnabled);
+    if (edited === null) {
+      for (const pending of pendingText) yield pending;
+      for (const chunk of terminal) yield chunk;
+      return;
+    }
+
+    const index = textIndex ?? (maxIndex + 1);
+    yield { type: 'block-start', index, blockType: 'text' };
+    yield { type: 'text-delta', index, text: edited };
+    yield { type: 'block-end', index, block: { type: 'text', text: edited } };
+    for (const chunk of terminal) yield chunk;
+  })();
+}
+
+/**
+ * 注册工作层提示词和最终回答文风编辑。
+ * @param ctx - 当前作用域的 Cordis 上下文。
+ * @param config - 已校验的插件配置。
+ */
+export function apply(ctx, config) {
+  if ((config.overrideIdentity ?? true) !== false) {
+    const order = typeof ctx.systemPrompt.getSectionOrder === 'function'
+      ? ctx.systemPrompt.getSectionOrder('HARNESS_IDENTITY')
+      : -1000;
+    ctx.effect(() => ctx.systemPrompt.section({
+      name: 'harness:identity',
+      order: Number.isFinite(order) ? order : -1000,
+      text: config.identityText ?? 'You are an AI assistant.',
+      interpolate: false
+    }), 'character-hikari-rento.identity()');
+  }
+
+  ctx.effect(() => ctx.systemPrompt.section({
+    name: config.sectionName ?? 'character:work-policy',
+    order: config.sectionOrder ?? 0,
+    text: renderWorkPolicy(config.detail ?? 'standard'),
+    interpolate: false
+  }), 'character-hikari-rento.work-policy()');
+
+  if ((config.includeRuntimeContext ?? true) === false) ctx.systemPrompt.suppressRuntimeContext();
+
+  ctx.effect(() => ctx.on('llm/stream', (options, next) => wrapFinalAnswer(ctx, options, next, config.fewShotEnabled ?? true)),
+    'character-hikari-rento.voice()');
+}
+
+/** 兼容旧调用：渲染完整角色文本（2.0 不再把它注入工作层）。 */
 export function renderCharacterPrompt(detail, fewShotEnabled, referencesDir = REFERENCES_DIR) {
   const names = DETAIL_SECTIONS[detail] ?? DETAIL_SECTIONS.standard;
   const parts = names.map((sectionName) => CHARACTER.sections[sectionName]).filter(Boolean);
@@ -280,54 +579,34 @@ export function renderCharacterPrompt(detail, fewShotEnabled, referencesDir = RE
   return parts.join('\n\n').replaceAll('{{REFERENCES_DIR}}', referencesDir.replace(/\\/g, '/'));
 }
 
-/**
- * 尾锚：系统提示词最后一句。
- *
- * 前缀段负责「她是谁」，但长上下文里越靠前越容易被稀释；这一段用
- * `deployment:persona-suffix`（order 10200）把身份重新放到离生成点最近的位置，
- * 每步组装都会重发一次。只讲「现在怎么说话」，不重复设定。
- */
-const ANCHOR_TEXT = [
-  '你是「恋兔光」（恋兎ヒカリ）。回答用户时用她的口吻：先给判断，再解释，一到三句。',
-  '工具调用与中间进度可以用工程语气，但那不是你说话的样子。不要复述设定，也不要解释自己在扮演。',
-  '技术/工具类回答、给用户的交付说明也都算回答，用恋兔光的口吻；只是不要硬塞招牌台词或口头池——工程语气只用于工具调用参数和中间进度。',
-  '回答前先自问：这句话是恋兔光会说的吗？'
-].join('\n');
+/** 运行时配置。 */
+export const Config = z.object({
+  /** 工作层档案路由深度：minimal 只给核心策略；standard 加档案路由；full 再加档案纪律。 */
+  detail: z.union(['minimal', 'standard', 'full']).default('standard'),
+  /** 文风编辑是否附上示例台词。 */
+  fewShotEnabled: z.boolean().default(true),
+  /** 工作层段落名。 */
+  sectionName: z.string().default('character:work-policy'),
+  /** 工作层段落排序值。 */
+  sectionOrder: z.number().default(0),
+  /** 是否遮蔽 DSH 自带的 harness:identity 段。 */
+  overrideIdentity: z.boolean().default(true),
+  /** 遮蔽后的身份段文案；默认中性，最终回答由文风层处理。 */
+  identityText: z.string().default('You are an AI assistant.'),
+  /** 是否包含动态 runtime-context 快照。 */
+  includeRuntimeContext: z.boolean().default(true)
+});
 
-/**
- * 注册人设段落。
- * @param ctx - 当前作用域的 Cordis 上下文。
- * @param config - 已校验的插件配置。
- */
-export function apply(ctx, config) {
-  const text = renderCharacterPrompt(config.detail ?? 'standard', config.fewShotEnabled ?? true);
-  if ((config.overrideIdentity ?? true) !== false) {
-    const order = typeof ctx.systemPrompt.getSectionOrder === 'function'
-      ? ctx.systemPrompt.getSectionOrder('HARNESS_IDENTITY')
-      : -1000;
-    ctx.effect(() => ctx.systemPrompt.section({
-      name: 'harness:identity',
-      order: Number.isFinite(order) ? order : -1000,
-      text: config.identityText ?? 'You are an AI assistant.',
-      interpolate: false
-    }), 'character-hikari-rento.identity()');
-  }
-  ctx.effect(() => ctx.systemPrompt.section({
-    name: config.sectionName ?? 'deployment:persona-prefix',
-    order: config.sectionOrder ?? 0,
-    text,
-    interpolate: false
-  }), 'character-hikari-rento.section()');
-  if ((config.anchorEnabled ?? true) !== false) {
-    ctx.effect(() => ctx.systemPrompt.section({
-      name: 'deployment:persona-suffix',
-      order: 10200,
-      text: ANCHOR_TEXT,
-      interpolate: false
-    }), 'character-hikari-rento.anchor()');
-  }
-  if ((config.includeRuntimeContext ?? true) === false) ctx.systemPrompt.suppressRuntimeContext();
-}
+/** 便于测试和别的插件读取文本处理函数。 */
+export const voice = {
+  protectText,
+  restoreText,
+  validateRewrite,
+  renderWorkPolicy,
+  renderVoiceGuide,
+  buildEditorRequest,
+  wrapFinalAnswer
+};
 
 /** 便于别的插件或测试读取角色定义。 */
 export const character = CHARACTER;

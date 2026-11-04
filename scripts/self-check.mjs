@@ -41,7 +41,7 @@ const character = JSON.parse(await read('character.json'));
 const index = await read('packages/plugin/index.js');
 const readme = await read('README.md');
 const detailLevels = ['minimal', 'standard', 'full'];
-const configFields = ['detail', 'fewShotEnabled', 'sectionName', 'sectionOrder', 'anchorEnabled', 'overrideIdentity', 'identityText', 'includeRuntimeContext'];
+const configFields = ['detail', 'fewShotEnabled', 'sectionName', 'sectionOrder', 'overrideIdentity', 'identityText', 'includeRuntimeContext'];
 
 // --------------------------------------------------------------------------
 // monorepo root
@@ -149,9 +149,13 @@ check('character.json: speech pools carry usage labels',
 // --------------------------------------------------------------------------
 check('plugin index.js: named export apply()', /export function apply\(ctx, config\)/.test(index));
 check('plugin index.js: named export renderCharacterPrompt()', /export function renderCharacterPrompt\(/.test(index));
+check('plugin index.js: named export renderWorkPolicy()', /export function renderWorkPolicy\(/.test(index));
+check('plugin index.js: exports voice helpers', /export const voice = \{/.test(index));
+check('plugin index.js: hooks llm/stream for final-answer editing', index.includes("ctx.on('llm/stream'"));
+check('plugin index.js: no legacy tail anchor', !index.includes('ANCHOR_TEXT') && !index.includes('anchorEnabled'));
 check('plugin index.js: exports the character definition', /export const character = CHARACTER/.test(index));
 check('plugin index.js: module tag matches the package name', index.includes(`@module ${pluginPkg.name}`));
-check('plugin index.js: injects systemPrompt', index.includes("export const inject = ['systemPrompt']"));
+check('plugin index.js: injects systemPrompt and llm', index.includes("export const inject = ['systemPrompt', 'llm']"));
 check('plugin index.js: Config validates every documented field',
   configFields.every((field) => index.includes(`${field}: z.`)));
 check('plugin index.js: every detail level is wired', detailLevels.every((level) => index.includes(`'${level}'`)));
