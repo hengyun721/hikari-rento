@@ -41,6 +41,12 @@ assert.equal(voice.protectText('共 3 个文件').spans.length, 0);
 assert.ok(voice.splitSegments('第一段内容。\n\n第二段内容。', 10).length >= 2);
 assert.equal(voice.splitSegments('| A | B |\n|---|---|\n| 1 | 2 |', 5).length, 1);
 
+const tableText = '前面一段。\n| 项目 | 值 |\n|---|---|\n| A | 1 |\n后面一段。';
+const tableProtected = voice.protectText(tableText);
+assert.equal(voice.restoreText(tableProtected.text, tableProtected), tableText);
+assert.ok(!tableProtected.text.includes('| 项目 |'));
+assert.ok(tableProtected.text.includes('⟦P0⟧'));
+
 const rewritten = protectedData.text
   .replace('已完成。', '搞定了。')
   .replace('结果：测试通过，剩余风险为 0。', '结果：测试过了，风险为 0。');

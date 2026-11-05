@@ -153,6 +153,8 @@ export function protectText(text) {
     /[A-Za-z]:[\\/][^\s，。；：、）)]+/g,
     /(?:~|\.{1,2})?\/[^\s，。；：、）)]+/g,
     /\b[\w.-]+\.(?:md|json|jsonl|js|mjs|cjs|ts|tsx|jsx|py|go|rs|java|c|cc|cpp|h|hpp|cs|exe|zip|tar|gz|png|jpe?g|webp|svg|yaml|yml|toml|txt|csv|xlsx|docx|pdf)\b/gi,
+    // 整张 Markdown 表格作为一个不可改写片段，避免编辑模型动表头/单元格/列。
+    /(?:^|\n)(?:[ \t]*\|.*\|[ \t]*(?:\n|$))+/g,
     // 只保护有单位/有指代的事实数字；裸数字留给模型保留，靠后续校验兜底。
     /(?:第|图|表|式|页|章|节)\s*\d+(?:\.\d+)?/g,
     /\b\d+(?:\.\d+)?\s*(?:%|‰|°C|℃|V|mV|uV|A|mA|uA|Ω|kΩ|MΩ|Hz|kHz|MHz|GHz|s|ms|us|ns|mm|cm|km|m|g|kg|mg|dB|bit|Byte|B|KB|MB|GB|TB|W|kW|mW|F|uF|nF|pF|H|mH|uH|rpm|r\/min)\b/gi,
