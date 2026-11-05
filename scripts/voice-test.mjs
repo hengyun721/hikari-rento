@@ -5,7 +5,23 @@
  *     node scripts/voice-test.mjs
  */
 import assert from 'node:assert/strict';
-import { apply, voice } from '../packages/plugin/index.js';
+import { readFileSync } from 'node:fs';
+
+// CI 故意不装依赖；把 schemastery 换成最小 stub，避免测试去解析 DSH 的包。
+const pluginSource = readFileSync(new URL('../packages/plugin/index.js', import.meta.url), 'utf8')
+  .replace("import z from '@deepseek-ai/schemastery';", [
+    'const z = {',
+    '  object: (schema) => schema,',
+    '  union: () => ({ default: (value) => value }),',
+    '  boolean: () => ({ default: (value) => value }),',
+    '  string: () => ({ default: (value) => value }),',
+    '  number: () => ({ default: (value) => value })',
+    '};'
+  ].join('\n'))
+  .replace("import { fileURLToPath } from 'node:url';", '')
+  .replace("const REFERENCES_DIR = fileURLToPath(new URL('./references/', import.meta.url));", "const REFERENCES_DIR = 'references/';");
+const plugin = await import(`data:text/javascript;base64,${Buffer.from(pluginSource).toString('base64')}`);
+const { apply, voice } = plugin;
 
 const original = [
   '已完成。修改了 3 个文件：`src/a.js`、`src/b.ts`，并运行 `npm test`。',
