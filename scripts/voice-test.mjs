@@ -167,4 +167,43 @@ assert.ok(!sections.some((section) => section.name === 'deployment:persona-prefi
 assert.ok(sections.find((section) => section.name === 'character:work-policy').text.includes('中立的工程助手'));
 assert.ok(listeners.some(({ event }) => event === 'llm/stream'));
 
+const structuredText = [
+  '【正文】',
+  '条例第 3 条：测试通过。',
+  '【吐槽】',
+  '这条条例好长。'
+].join('\n');
+const split = voice.splitFinalAnswer(structuredText);
+assert.equal(split.objective, '条例第 3 条：测试通过。');
+assert.equal(split.commentary, '这条条例好长。');
+assert.ok(voice.renderWorkPolicy('full').includes('【正文】'));
+assert.ok(voice.renderWorkPolicy('full').includes('【吐槽】'));
+
+const commentaryContext = {
+  llm: {
+    async *stream() {
+      yield { type: 'text-delta', index: 0, text: '这条例真长～' };
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    }
+  }
+};
+const structuredChunks = [];
+for await (const chunk of voice.wrapFinalAnswer(
+  commentaryContext,
+  { sessionId: 's1' },
+  async function* () {
+    yield { type: 'block-start', index: 0, blockType: 'text' };
+    yield { type: 'text-delta', index: 0, text: structuredText };
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: structuredText } };
+    yield { type: 'finish', reason: { kind: 'stop' } };
+  }
+)) {
+  structuredChunks.push(chunk);
+}
+const structuredOutput = structuredChunks.find((chunk) => chunk.type === 'text-delta')?.text;
+assert.ok(structuredOutput.includes('条例第 3 条：测试通过。'));
+assert.ok(structuredOutput.includes('这条例真长～'));
+assert.ok(!structuredOutput.includes('【正文】'));
+assert.ok(!structuredOutput.includes('【吐槽】'));
+
 console.log('voice checks passed');
