@@ -28,14 +28,15 @@
               └─ ctx.on('llm/stream', (options, next) => wrapFinalAnswer(...))
                    ├─ 跳过辅助调用（没有 sessionId / 有 purpose）
                    ├─ 遇到 tool-call → 原样放行
-                   ├─ 只缓冲纯文本回答
-                   ├─ splitSegments：按段落/代码块切成约 1500 字的小段
+                   ├─ finish 不是 stop → 原样放行，不润色截断内容
+                   ├─ 按原 text block 收集，不把多个块揉成一个
+                   ├─ splitSegments：block 内按 Markdown 段落/句子切分，表格/列表/引用/代码不拆
                    ├─ protectText：保护代码、URL、路径、文件名、日期/时间和带单位量
                    ├─ ctx.llm.stream：逐段用同一 provider/model 做文风编辑
                    ├─ restoreText + validateRewrite：某段失败只回退该段
                    ├─ 事实校验调用：PASS 才采用该段
                    ├─ DSH_HIKARI_DEBUG=1：记录失败原因，不打印正文
-                   └─ 输出改写后的文本块
+                   └─ 按原 block index 输出改写后的文本块
 ```
 
 ## 为什么工作层不再放人设

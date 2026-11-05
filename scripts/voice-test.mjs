@@ -39,6 +39,7 @@ assert.ok(!protectedData.text.includes('src/a.js'));
 assert.ok(protectedData.text.includes('⟦P0⟧'));
 assert.equal(voice.protectText('共 3 个文件').spans.length, 0);
 assert.ok(voice.splitSegments('第一段内容。\n\n第二段内容。', 10).length >= 2);
+assert.equal(voice.splitSegments('| A | B |\n|---|---|\n| 1 | 2 |', 5).length, 1);
 
 const rewritten = protectedData.text
   .replace('已完成。', '搞定了。')
@@ -101,6 +102,53 @@ for await (const chunk of voice.wrapFinalAnswer(editedContext, { sessionId: 's1'
 }
 assert.ok(emitted.some((chunk) => chunk.type === 'text-delta' && chunk.text === '搞定了。'));
 assert.equal(emitted.at(-1).type, 'finish');
+
+async function* twoBlocksStream() {
+  yield { type: 'block-start', index: 0, blockType: 'text' };
+  yield { type: 'text-delta', index: 0, text: '第一段。' };
+  yield { type: 'block-end', index: 0, block: { type: 'text', text: '第一段。' } };
+  yield { type: 'block-start', index: 1, blockType: 'text' };
+  yield { type: 'text-delta', index: 1, text: '第二段。' };
+  yield { type: 'block-end', index: 1, block: { type: 'text', text: '第二段。' } };
+  yield { type: 'finish', reason: { kind: 'stop' } };
+}
+
+const blockContext = {
+  llm: {
+    calls: 0,
+    async *stream() {
+      this.calls += 1;
+      if (this.calls % 2 === 1) {
+        yield { type: 'text-delta', index: 0, text: this.calls === 1 ? '第一段呀。' : '第二段呀。' };
+      } else {
+        yield { type: 'text-delta', index: 0, text: 'PASS' };
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    }
+  }
+};
+const twoBlocks = [];
+for await (const chunk of voice.wrapFinalAnswer(blockContext, { sessionId: 's1' }, twoBlocksStream)) {
+  twoBlocks.push(chunk);
+}
+const starts = twoBlocks.filter((chunk) => chunk.type === 'block-start');
+assert.deepEqual(starts.map((chunk) => chunk.index), [0, 1]);
+assert.ok(twoBlocks.some((chunk) => chunk.type === 'text-delta' && chunk.text === '第一段呀。'));
+assert.ok(twoBlocks.some((chunk) => chunk.type === 'text-delta' && chunk.text === '第二段呀。'));
+
+async function* truncatedStream() {
+  yield { type: 'text-delta', index: 0, text: '被截断的回答。' };
+  yield { type: 'finish', reason: { kind: 'max-tokens' } };
+}
+const truncated = [];
+for await (const chunk of voice.wrapFinalAnswer(
+  { llm: { async *stream() { throw new Error('editor must not run for truncated streams'); } } },
+  { sessionId: 's1' },
+  truncatedStream
+)) {
+  truncated.push(chunk);
+}
+assert.ok(truncated.some((chunk) => chunk.type === 'text-delta' && chunk.text === '被截断的回答。'));
 
 async function* toolStream() {
   yield { type: 'text-delta', index: 0, text: '先查一下。' };

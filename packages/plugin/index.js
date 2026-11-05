@@ -456,22 +456,26 @@ export function splitSegments(text, maxLen = 1500) {
 
   const parts = [];
   for (const block of blocks) {
-    if (block.length <= maxLen) {
+    const blockLines = block.split('\n');
+    const atomic = blockLines.some((line) => /^\s*```/.test(line) ||
+      /^\s*\|.*\|\s*$/.test(line) ||
+      /^\s*>\s?/.test(line) ||
+      /^\s*(?:[-*+]|\d+[.)])\s+/.test(line));
+    if (atomic || block.length <= maxLen) {
       parts.push(block);
       continue;
     }
-    let chunk = [];
-    let size = 0;
-    for (const line of block.split('\n')) {
-      if (size + line.length + 1 > maxLen && chunk.length > 0) {
-        parts.push(chunk.join('\n'));
-        chunk = [];
-        size = 0;
+    // 普通段落按中文句末切，避免把表格/列表/代码从中间切开。
+    const sentences = block.match(/[^。！？!?；;\n]+[。！？!?；;]?/g) ?? [block];
+    let chunk = '';
+    for (const sentence of sentences) {
+      if (chunk && chunk.length + sentence.length > maxLen) {
+        parts.push(chunk);
+        chunk = '';
       }
-      chunk.push(line);
-      size += line.length + 1;
+      chunk += sentence;
     }
-    if (chunk.length > 0) parts.push(chunk.join('\n'));
+    if (chunk) parts.push(chunk);
   }
 
   const merged = [];
@@ -577,41 +581,6 @@ async function editFinalAnswer(ctx, options, original, fewShotEnabled) {
   return restored;
 }
 
-async function editSegmentedAnswer(ctx, options, original, fewShotEnabled) {
-  const segments = splitSegments(original);
-  if (segments.length <= 1) return editFinalAnswer(ctx, options, original, fewShotEnabled);
-  debugLog(ctx, 'voice rewrite segmented', { chars: original.length, segments: segments.length });
-  const results = [];
-  let changed = 0;
-  let failed = 0;
-  for (const segment of segments) {
-    if (!segment.trim()) {
-      results.push(segment);
-      continue;
-    }
-    const edited = await editFinalAnswer(ctx, options, segment, fewShotEnabled);
-    if (edited === null) {
-      failed += 1;
-      results.push(segment);
-    } else {
-      changed += 1;
-      results.push(edited);
-    }
-  }
-  if (changed === 0) {
-    debugLog(ctx, 'voice rewrite failed for every segment', { segments: segments.length });
-    return null;
-  }
-  debugLog(ctx, 'voice rewrite partially accepted', { segments: segments.length, changed, failed });
-  return results.join('\n\n');
-}
-
-function isTextChunk(chunk) {
-  return (chunk.type === 'block-start' && chunk.blockType === 'text') ||
-    chunk.type === 'text-delta' ||
-    (chunk.type === 'block-end' && chunk.block?.type === 'text');
-}
-
 function isRootSession(ctx, sessionId) {
   const agents = ctx.agents;
   if (!agents || typeof agents.roots !== 'function') return true;
@@ -624,8 +593,62 @@ function isRootSession(ctx, sessionId) {
   }
 }
 
+function isTextChunk(chunk) {
+  return (chunk.type === 'block-start' && chunk.blockType === 'text') ||
+    chunk.type === 'text-delta' ||
+    (chunk.type === 'block-end' && chunk.block?.type === 'text');
+}
+
+function isToolChunk(chunk) {
+  return chunk.type === 'tool-call-delta' ||
+    (chunk.type === 'block-start' && chunk.blockType === 'tool-call');
+}
+
+async function* rewriteTextBlock(ctx, options, record, fewShotEnabled) {
+  if (!record.text.trim()) {
+    if (record.start) yield record.start;
+    for (const delta of record.deltas) yield delta;
+    if (record.end) yield record.end;
+    return;
+  }
+  const segments = splitSegments(record.text);
+  debugLog(ctx, 'voice rewrite block', {
+    index: record.index,
+    chars: record.text.length,
+    segments: segments.length
+  });
+  if (record.start) yield record.start;
+  let finalText = '';
+  let cursor = 0;
+  for (const segment of segments) {
+    const start = record.text.indexOf(segment, cursor);
+    const gap = start >= 0 ? record.text.slice(cursor, start) : '\n\n';
+    const safeStart = start >= 0 ? start : cursor;
+    const leading = segment.match(/^\s*/)?.[0] ?? '';
+    const trailing = segment.match(/\s*$/)?.[0] ?? '';
+    const core = segment.slice(leading.length, segment.length - trailing.length);
+    const edited = core.trim()
+      ? await editFinalAnswer(ctx, options, core, fewShotEnabled)
+      : null;
+    const piece = gap + leading + (edited ?? core) + trailing;
+    finalText += piece;
+    yield { type: 'text-delta', index: record.index, text: piece };
+    cursor = safeStart + segment.length;
+  }
+  const tail = record.text.slice(cursor);
+  if (tail) {
+    finalText += tail;
+    yield { type: 'text-delta', index: record.index, text: tail };
+  }
+  if (record.end) {
+    yield { ...record.end, block: { ...record.end.block, text: finalText } };
+  }
+}
+
 /**
  * 只改写「没有工具调用的纯文本最终回答」；工具步骤原样放行。
+ * 先收齐整个流，确认 finish 是 stop 后再按原 text block 改写；
+ * 不把多个文本块揉成一个，也不改 reasoning/tool/usage 块。
  * @param ctx - Cordis 上下文。
  * @param options - GenerateOptions。
  * @param next - 下游 llm/stream。
@@ -639,76 +662,58 @@ function wrapFinalAnswer(ctx, options, next, fewShotEnabled) {
   }
   debugLog(ctx, 'voice hook candidate', { sessionId: options.sessionId });
   return (async function* () {
-    const pendingText = [];
-    const terminal = [];
-    let text = '';
-    let hasTool = false;
-    let passThrough = false;
-    let textIndex;
-    let maxIndex = -1;
+    const chunks = [];
+    for await (const chunk of next()) chunks.push(chunk);
 
-    for await (const chunk of next()) {
-      if (typeof chunk.index === 'number') maxIndex = Math.max(maxIndex, chunk.index);
+    const finish = chunks.find((chunk) => chunk.type === 'finish');
+    if (!finish || finish.reason?.kind !== 'stop') {
+      debugLog(ctx, 'voice skipped: finish is not stop', { reason: finish?.reason?.kind ?? 'missing' });
+      for (const chunk of chunks) yield chunk;
+      return;
+    }
 
-      if (passThrough) {
-        yield chunk;
-        continue;
+    if (chunks.some(isToolChunk)) {
+      debugLog(ctx, 'voice skipped: tool-call stream');
+      for (const chunk of chunks) yield chunk;
+      return;
+    }
+
+    const textBlocks = new Map();
+    for (const chunk of chunks) {
+      if (!isTextChunk(chunk)) continue;
+      const index = chunk.index;
+      let record = textBlocks.get(index);
+      if (!record) {
+        record = { index, start: null, end: null, deltas: [], text: '' };
+        textBlocks.set(index, record);
       }
-
-      if (chunk.type === 'tool-call-delta' ||
-        (chunk.type === 'block-start' && chunk.blockType === 'tool-call')) {
-        hasTool = true;
-        passThrough = true;
-        for (const pending of pendingText) yield pending;
-        pendingText.length = 0;
-        yield chunk;
-        continue;
+      if (chunk.type === 'block-start') record.start = chunk;
+      else if (chunk.type === 'text-delta') {
+        record.deltas.push(chunk);
+        record.text += chunk.text;
+      } else if (chunk.type === 'block-end') {
+        record.end = chunk;
+        if (!record.text) record.text = chunk.block?.text ?? '';
       }
+    }
 
-      if (chunk.type === 'usage' || chunk.type === 'finish') {
-        terminal.push(chunk);
-        continue;
-      }
+    if (textBlocks.size === 0) {
+      debugLog(ctx, 'voice skipped: no text block');
+      for (const chunk of chunks) yield chunk;
+      return;
+    }
 
+    const emitted = new Set();
+    for (const chunk of chunks) {
       if (isTextChunk(chunk)) {
-        pendingText.push(chunk);
-        if (chunk.type === 'text-delta') text += chunk.text;
-        if (chunk.type === 'block-end' && !text) text = chunk.block.text ?? '';
-        if (textIndex === undefined) textIndex = chunk.index;
+        const record = textBlocks.get(chunk.index);
+        if (!record || emitted.has(record.index)) continue;
+        emitted.add(record.index);
+        yield* rewriteTextBlock(ctx, options, record, fewShotEnabled);
         continue;
       }
-
       yield chunk;
     }
-
-    if (hasTool) {
-      debugLog(ctx, 'voice skipped: tool-call stream');
-      for (const pending of pendingText) yield pending;
-      for (const chunk of terminal) yield chunk;
-      return;
-    }
-
-    if (!text.trim()) {
-      debugLog(ctx, 'voice skipped: empty text');
-      for (const pending of pendingText) yield pending;
-      for (const chunk of terminal) yield chunk;
-      return;
-    }
-
-    debugLog(ctx, 'voice rewrite start', { chars: text.length });
-    const edited = await editSegmentedAnswer(ctx, options, text, fewShotEnabled);
-    if (edited === null) {
-      debugLog(ctx, 'voice fallback: original text');
-      for (const pending of pendingText) yield pending;
-      for (const chunk of terminal) yield chunk;
-      return;
-    }
-
-    const index = textIndex ?? (maxIndex + 1);
-    yield { type: 'block-start', index, blockType: 'text' };
-    yield { type: 'text-delta', index, text: edited };
-    yield { type: 'block-end', index, block: { type: 'text', text: edited } };
-    for (const chunk of terminal) yield chunk;
   })();
 }
 
