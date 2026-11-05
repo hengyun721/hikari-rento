@@ -259,17 +259,6 @@ const FULL_REFERENCE_RULES = [
   '查不到就直说不知道，不解释、不猜、不补设定。'
 ].join('\n');
 
-const FINAL_FORMAT = [
-  '【最终回答格式】',
-  '如果最终回答包含客观、严谨、可直接交付的内容（条例总结、数据、步骤、结论、代码说明等），按下面两块写：',
-  '【正文】',
-  '客观、完整、中立的正文；不要加入口癖、自称、吐槽或角色判断。',
-  '【吐槽】',
-  '可选的 1 到 3 句短评；先写一句中性短评即可，文风层会把它转换成恋兔光口吻，不要复述正文事实。',
-  '纯闲聊、角色问答、剧情问题不需要分块，整段交给文风层处理。',
-  '文件内容、工具参数、代码和命令永远不要使用这个格式，也不要用角色口吻。'
-].join('\n');
-
 /**
  * 把工作层策略渲染成系统提示词文本。
  * @param detail - minimal 只给核心策略；standard 加档案路由；full 再加档案纪律。
@@ -278,7 +267,7 @@ const FINAL_FORMAT = [
  */
 export function renderWorkPolicy(detail, referencesDir = REFERENCES_DIR) {
   const level = detail === 'minimal' || detail === 'full' ? detail : 'standard';
-  const parts = [WORK_POLICY, FINAL_FORMAT];
+  const parts = [WORK_POLICY];
   if (level !== 'minimal') parts.push(REFERENCE_GUIDE);
   if (level === 'full') parts.push(FULL_REFERENCE_RULES);
   return parts.join('\n\n').replaceAll('{{REFERENCES_DIR}}', referencesDir.replace(/\\/g, '/'));
@@ -325,16 +314,6 @@ const FACT_CHECK_RULES = [
   '只输出 PASS 或 FAIL，不要解释。',
   '出现以下任一情况就输出 FAIL：新增、删除或改变事实、数字、路径、命令、代码、文件名、结论、步骤、风险、警告、关系或不确定性。',
   '只有文风、措辞、语气变化，事实完全一致时才输出 PASS。'
-].join('\n');
-
-const COMMENTARY_RULES = [
-  '你是恋兔光的文风编辑，只改写【吐槽】部分。',
-  '【正文】是只读上下文：不得改写、删除、复述或评价它；只输出改写后的吐槽。',
-  '吐槽只改措辞、语气、节奏，不新增事实、数字、路径、命令、代码、文件名、结论或风险。',
-  '原文里的 ⟦P0⟧ 形式是受保护片段，必须原样保留；不要改写、删除、移动或新增占位符。',
-  '吐槽保持 1 到 3 句，不要解释自己在编辑，不要输出前言、后记或“作为恋兔光”之类的话。',
-  '如果无法在不改变事实的情况下改写，原样输出吐槽。',
-  '只输出吐槽正文，不要输出【正文】或【吐槽】标签。'
 ].join('\n');
 
 /**
@@ -472,57 +451,6 @@ async function verifyRewrite(ctx, options, original, rewritten) {
   return /^\s*PASS\b/i.test(raw.trim());
 }
 
-/**
- * 拆分「客观正文」与「吐槽」。
- * @param text - 最终回答。
- * @returns 正文、吐槽；没有【正文】标记时返回 null。
- */
-export function splitFinalAnswer(text) {
-  const head = '【正文】';
-  const tail = '【吐槽】';
-  const start = text.indexOf(head);
-  if (start < 0) return null;
-  const tailStart = text.indexOf(tail, start + head.length);
-  const objective = text.slice(start + head.length, tailStart < 0 ? text.length : tailStart).trim();
-  if (!objective) return null;
-  const commentary = tailStart < 0 ? '' : text.slice(tailStart + tail.length).trim();
-  return { objective, commentary };
-}
-
-async function editCommentary(ctx, options, objective, commentary, fewShotEnabled) {
-  if (!commentary.trim() || typeof ctx.llm?.stream !== 'function') return null;
-  const protectedData = protectText(commentary);
-  let raw = '';
-  try {
-    for await (const chunk of ctx.llm.stream({
-      provider: options.provider,
-      model: options.model,
-      system: `${COMMENTARY_RULES}\n\n【恋兔光的声音】\n\n${renderVoiceGuide(fewShotEnabled)}`,
-      messages: [{
-        role: 'user',
-        content: [{
-          type: 'text',
-          text: `【只读正文】\n${objective}\n\n【待改写吐槽】\n${protectedData.text}`
-        }]
-      }],
-      maxTokens: Math.min(2048, Math.max(256, Math.ceil(commentary.length * 2))),
-      signal: options.signal
-    })) {
-      if (chunk.type === 'tool-call-delta') return null;
-      if (chunk.type === 'text-delta') raw += chunk.text;
-      if (chunk.type === 'block-end' && !raw && chunk.block?.type === 'text') raw = chunk.block.text ?? '';
-      if (chunk.type === 'finish') {
-        if (chunk.reason?.kind !== 'stop') return null;
-        break;
-      }
-    }
-  } catch {
-    return null;
-  }
-  const restored = restoreText(raw.trim(), protectedData);
-  return restored !== null && validateRewrite(commentary, restored) ? restored : null;
-}
-
 async function editFinalAnswer(ctx, options, original, fewShotEnabled) {
   if (typeof ctx.llm?.stream !== 'function') return null;
   const { system, user, protectedData } = buildEditorRequest(original, fewShotEnabled);
@@ -641,22 +569,6 @@ function wrapFinalAnswer(ctx, options, next, fewShotEnabled) {
       return;
     }
 
-    const structured = splitFinalAnswer(text);
-    if (structured) {
-      const editedCommentary = structured.commentary
-        ? await editCommentary(ctx, options, structured.objective, structured.commentary, fewShotEnabled)
-        : null;
-      const finalText = structured.commentary
-        ? `${structured.objective}\n\n${editedCommentary ?? structured.commentary}`
-        : structured.objective;
-      const index = textIndex ?? (maxIndex + 1);
-      yield { type: 'block-start', index, blockType: 'text' };
-      yield { type: 'text-delta', index, text: finalText };
-      yield { type: 'block-end', index, block: { type: 'text', text: finalText } };
-      for (const chunk of terminal) yield chunk;
-      return;
-    }
-
     const edited = await editFinalAnswer(ctx, options, text, fewShotEnabled);
     if (edited === null) {
       for (const pending of pendingText) yield pending;
@@ -742,7 +654,6 @@ export const voice = {
   renderWorkPolicy,
   renderVoiceGuide,
   buildEditorRequest,
-  splitFinalAnswer,
   verifyRewrite,
   wrapFinalAnswer
 };
