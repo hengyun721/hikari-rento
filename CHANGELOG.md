@@ -7,12 +7,19 @@
 
 （暂无）
 
+## [plugin 2.0.1] — 2026-11-05
+
+### Fixed
+
+- **修正工作层用语**：2.0.0 的提示词写成「普通任务不要使用恋兔光口吻」，容易被读成「普通任务的最终回答也可以不回人设」。实际要求是：**工作过程**（工具参数、文件内容、命令、代码、中间进度）保持中立；**最终聊天回答，包括普通任务和技术问答，仍由文风层转换成恋兔光口吻**。
+- 同步 README / architecture 的表述，避免把「工作层中立」误读成「最终回答中立」。
+
 ## [plugin 2.0.0] — 2026-11-05
 
 ### Breaking
 
 - **工作层与最终回答层分离**：`index.js` 不再把完整人设注入 system prompt。工作层只注册中立的工程策略和档案路由；普通任务不受口癖、情绪、关系表影响。
-- **最终回答强制文风编辑**：监听 `llm/stream`，只处理没有工具调用的纯文本最终回答，用 `character.json` 的 `speech`、`personality`、`values`、`conversation`、`roleplay` 与 `fewShot` 改写。没有「要不要人设」的用户开关。
+- **最终回答强制文风编辑**：监听 `llm/stream`，只处理没有工具调用的纯文本最终回答，用 `character.json` 的 `speech`、`personality`、`values`、`conversation` 与 `fewShot` 改写。没有「要不要人设」的用户开关。
 - **删除尾锚**：`anchorEnabled` 与 `deployment:persona-suffix` 移除。最终回答层已经是必经路径，尾锚只会重复。
 - **`detail` 语义变更**：现在只控制工作层的档案路由深度（`minimal`/`standard`/`full`），不再控制人设全文。
 - **`sectionName` 默认值改为 `character:work-policy`**：插件不再注册 `deployment:persona-prefix`，也不再遮蔽部署级人设。
