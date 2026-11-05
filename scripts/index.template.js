@@ -40,6 +40,24 @@ const FEW_SHOT = @@FEWSHOT@@;
 /** 参考档案目录（references/）的绝对路径，随插件安装位置自动解析。 */
 const REFERENCES_DIR = fileURLToPath(new URL('./references/', import.meta.url));
 
+/** 只在排查时输出结构化失败原因；不打印正文。 */
+const DEBUG = typeof process !== 'undefined' && process.env.DSH_HIKARI_DEBUG === '1';
+
+function debugLog(ctx, message, data) {
+  if (!DEBUG) return;
+  const suffix = data === undefined ? '' : ` ${JSON.stringify(data)}`;
+  const line = `[hikari-rento] ${message}${suffix}`;
+  try {
+    if (typeof ctx?.logger?.warn === 'function') ctx.logger.warn(line);
+    else console.warn(line);
+  } catch {}
+}
+
+function fail(ctx, reason, data) {
+  debugLog(ctx, `voice fallback: ${reason}`, data);
+  return null;
+}
+
 /** 工作层：默认中立，不把角色口吻带进工作过程。 */
 const WORK_POLICY = [
   '你是一个中立的工程助手。默认按工具、文件、测试结果和事实工作。',
@@ -135,7 +153,11 @@ export function protectText(text) {
     /[A-Za-z]:[\\/][^\s，。；：、）)]+/g,
     /(?:~|\.{1,2})?\/[^\s，。；：、）)]+/g,
     /\b[\w.-]+\.(?:md|json|jsonl|js|mjs|cjs|ts|tsx|jsx|py|go|rs|java|c|cc|cpp|h|hpp|cs|exe|zip|tar|gz|png|jpe?g|webp|svg|yaml|yml|toml|txt|csv|xlsx|docx|pdf)\b/gi,
-    /\b\d+(?:\.\d+)?%?\b/g
+    // 只保护有单位/有指代的事实数字；裸数字留给模型保留，靠后续校验兜底。
+    /(?:第|图|表|式|页|章|节)\s*\d+(?:\.\d+)?/g,
+    /\b\d+(?:\.\d+)?\s*(?:%|‰|°C|℃|V|mV|uV|A|mA|uA|Ω|kΩ|MΩ|Hz|kHz|MHz|GHz|s|ms|us|ns|mm|cm|km|m|g|kg|mg|dB|bit|Byte|B|KB|MB|GB|TB|W|kW|mW|F|uF|nF|pF|H|mH|uH|rpm|r\/min)\b/gi,
+    /\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b/g,
+    /\b\d{1,2}:\d{2}(?::\d{2})?\b/g
   ];
   const ranges = [];
   for (const pattern of patterns) {
@@ -213,6 +235,64 @@ export function validateRewrite(original, rewritten) {
 }
 
 /**
+ * 按段落/代码块切分最终回答；每段不超过 maxLen，避免一处失败拖垮整条回答。
+ * @param text - 最终回答。
+ * @param maxLen - 单段目标长度。
+ * @returns 段落数组。
+ */
+export function splitSegments(text, maxLen = 1500) {
+  if (text.length <= maxLen) return [text];
+  const blocks = [];
+  let buffer = [];
+  let inCode = false;
+  const flush = () => {
+    if (buffer.length > 0) {
+      blocks.push(buffer.join('\n'));
+      buffer = [];
+    }
+  };
+  for (const line of text.split('\n')) {
+    if (/^\s*```/.test(line)) inCode = !inCode;
+    if (!inCode && line.trim() === '') flush();
+    else buffer.push(line);
+  }
+  flush();
+
+  const parts = [];
+  for (const block of blocks) {
+    if (block.length <= maxLen) {
+      parts.push(block);
+      continue;
+    }
+    let chunk = [];
+    let size = 0;
+    for (const line of block.split('\n')) {
+      if (size + line.length + 1 > maxLen && chunk.length > 0) {
+        parts.push(chunk.join('\n'));
+        chunk = [];
+        size = 0;
+      }
+      chunk.push(line);
+      size += line.length + 1;
+    }
+    if (chunk.length > 0) parts.push(chunk.join('\n'));
+  }
+
+  const merged = [];
+  let current = '';
+  for (const part of parts) {
+    if (current && current.length + part.length + 2 > maxLen) {
+      merged.push(current);
+      current = part;
+    } else {
+      current = current ? `${current}\n\n${part}` : part;
+    }
+  }
+  if (current) merged.push(current);
+  return merged.length > 0 ? merged : [text];
+}
+
+/**
  * 生成文风编辑请求。
  * @param original - 原始最终回答。
  * @param fewShotEnabled - 是否附示例台词。
@@ -239,7 +319,7 @@ async function verifyRewrite(ctx, options, original, rewritten) {
         role: 'user',
         content: [{ type: 'text', text: `【原文】\n${original}\n\n【改写】\n${rewritten}` }]
       }],
-      maxTokens: 64,
+      maxTokens: 256,
       signal: options.signal
     })) {
       if (chunk.type === 'tool-call-delta') return false;
@@ -249,15 +329,19 @@ async function verifyRewrite(ctx, options, original, rewritten) {
         break;
       }
     }
-  } catch {
+  } catch (error) {
+    debugLog(ctx, 'fact check threw', { error: String(error) });
     return false;
   }
-  return /^\s*PASS\b/i.test(raw.trim());
+  const passed = /^\s*PASS\b/i.test(raw.trim());
+  if (!passed) debugLog(ctx, 'fact check rejected', { responseLength: raw.length });
+  return passed;
 }
 
 async function editFinalAnswer(ctx, options, original, fewShotEnabled) {
-  if (typeof ctx.llm?.stream !== 'function') return null;
+  if (typeof ctx.llm?.stream !== 'function') return fail(ctx, 'llm service unavailable');
   const { system, user, protectedData } = buildEditorRequest(original, fewShotEnabled);
+  const meta = { chars: original.length, placeholders: protectedData.spans.length };
   let raw = '';
   let sawDelta = false;
   try {
@@ -269,7 +353,7 @@ async function editFinalAnswer(ctx, options, original, fewShotEnabled) {
       maxTokens: Math.min(16384, Math.max(512, Math.ceil(original.length * 1.5))),
       signal: options.signal
     })) {
-      if (chunk.type === 'tool-call-delta') return null;
+      if (chunk.type === 'tool-call-delta') return fail(ctx, 'editor returned a tool call', meta);
       if (chunk.type === 'text-delta') {
         raw += chunk.text;
         sawDelta = true;
@@ -278,16 +362,52 @@ async function editFinalAnswer(ctx, options, original, fewShotEnabled) {
         raw += chunk.block.text ?? '';
       }
       if (chunk.type === 'finish') {
-        if (chunk.reason?.kind !== 'stop') return null;
+        if (chunk.reason?.kind !== 'stop') return fail(ctx, 'editor finish was not stop', { ...meta, reason: chunk.reason?.kind });
         break;
       }
     }
-  } catch {
-    return null;
+  } catch (error) {
+    return fail(ctx, 'editor threw', { ...meta, error: String(error) });
   }
   const restored = restoreText(raw.trim(), protectedData);
-  if (restored === null || !validateRewrite(original, restored)) return null;
-  return (await verifyRewrite(ctx, options, original, restored)) ? restored : null;
+  if (restored === null) return fail(ctx, 'placeholder restore failed', meta);
+  if (!validateRewrite(original, restored)) {
+    return fail(ctx, 'local validation failed', { ...meta, outputChars: restored.length });
+  }
+  if (!(await verifyRewrite(ctx, options, original, restored))) {
+    return fail(ctx, 'fact check failed', meta);
+  }
+  debugLog(ctx, 'voice rewrite accepted', meta);
+  return restored;
+}
+
+async function editSegmentedAnswer(ctx, options, original, fewShotEnabled) {
+  const segments = splitSegments(original);
+  if (segments.length <= 1) return editFinalAnswer(ctx, options, original, fewShotEnabled);
+  debugLog(ctx, 'voice rewrite segmented', { chars: original.length, segments: segments.length });
+  const results = [];
+  let changed = 0;
+  let failed = 0;
+  for (const segment of segments) {
+    if (!segment.trim()) {
+      results.push(segment);
+      continue;
+    }
+    const edited = await editFinalAnswer(ctx, options, segment, fewShotEnabled);
+    if (edited === null) {
+      failed += 1;
+      results.push(segment);
+    } else {
+      changed += 1;
+      results.push(edited);
+    }
+  }
+  if (changed === 0) {
+    debugLog(ctx, 'voice rewrite failed for every segment', { segments: segments.length });
+    return null;
+  }
+  debugLog(ctx, 'voice rewrite partially accepted', { segments: segments.length, changed, failed });
+  return results.join('\n\n');
 }
 
 function isTextChunk(chunk) {
@@ -317,7 +437,11 @@ function isRootSession(ctx, sessionId) {
  */
 function wrapFinalAnswer(ctx, options, next, fewShotEnabled) {
   if (options.sessionId === undefined || options.purpose !== undefined) return next();
-  if (!isRootSession(ctx, options.sessionId)) return next();
+  if (!isRootSession(ctx, options.sessionId)) {
+    debugLog(ctx, 'voice skipped: not a root session', { sessionId: options.sessionId });
+    return next();
+  }
+  debugLog(ctx, 'voice hook candidate', { sessionId: options.sessionId });
   return (async function* () {
     const pendingText = [];
     const terminal = [];
@@ -362,19 +486,23 @@ function wrapFinalAnswer(ctx, options, next, fewShotEnabled) {
     }
 
     if (hasTool) {
+      debugLog(ctx, 'voice skipped: tool-call stream');
       for (const pending of pendingText) yield pending;
       for (const chunk of terminal) yield chunk;
       return;
     }
 
     if (!text.trim()) {
+      debugLog(ctx, 'voice skipped: empty text');
       for (const pending of pendingText) yield pending;
       for (const chunk of terminal) yield chunk;
       return;
     }
 
-    const edited = await editFinalAnswer(ctx, options, text, fewShotEnabled);
+    debugLog(ctx, 'voice rewrite start', { chars: text.length });
+    const edited = await editSegmentedAnswer(ctx, options, text, fewShotEnabled);
     if (edited === null) {
+      debugLog(ctx, 'voice fallback: original text');
       for (const pending of pendingText) yield pending;
       for (const chunk of terminal) yield chunk;
       return;
@@ -458,6 +586,7 @@ export const voice = {
   renderWorkPolicy,
   renderVoiceGuide,
   buildEditorRequest,
+  splitSegments,
   verifyRewrite,
   wrapFinalAnswer
 };

@@ -37,10 +37,12 @@ const protectedData = voice.protectText(original);
 assert.equal(voice.restoreText(protectedData.text, protectedData), original);
 assert.ok(!protectedData.text.includes('src/a.js'));
 assert.ok(protectedData.text.includes('⟦P0⟧'));
+assert.equal(voice.protectText('共 3 个文件').spans.length, 0);
+assert.ok(voice.splitSegments('第一段内容。\n\n第二段内容。', 10).length >= 2);
 
 const rewritten = protectedData.text
   .replace('已完成。', '搞定了。')
-  .replace('结果：测试通过，剩余风险为 0。', '结果：测试过了，风险为零。');
+  .replace('结果：测试通过，剩余风险为 0。', '结果：测试过了，风险为 0。');
 const restored = voice.restoreText(rewritten, protectedData);
 assert.ok(restored);
 assert.equal(voice.validateRewrite(original, restored), true);
