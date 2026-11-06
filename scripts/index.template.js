@@ -268,7 +268,7 @@ export function validateRewrite(original, rewritten) {
  * @param maxLen - 单段目标长度。
  * @returns 段落数组。
  */
-export function splitSegments(text, maxLen = 4000) {
+export function splitSegments(text, maxLen = 1500) {
   if (text.length <= maxLen) return [text];
   const blocks = [];
   let buffer = [];
@@ -380,7 +380,7 @@ async function verifyRewrite(ctx, options, original, rewritten) {
         role: 'user',
         content: [{ type: 'text', text: `【原文】\n${original}\n\n【改写】\n${rewritten}` }]
       }],
-      maxTokens: 256,
+      maxTokens: 4096,
       signal: options.signal
     })) {
       if (chunk.type === 'tool-call-delta') return false;
@@ -411,7 +411,7 @@ async function editFinalAnswer(ctx, options, original, fewShotEnabled) {
       model: options.model,
       system,
       messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
-      maxTokens: Math.min(16384, Math.max(512, Math.ceil(original.length * 1.5))),
+      maxTokens: 16384,
       signal: options.signal
     })) {
       if (chunk.type === 'tool-call-delta') return fail(ctx, 'editor returned a tool call', meta);
