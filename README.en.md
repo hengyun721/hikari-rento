@@ -44,7 +44,7 @@ versions, separate tags, separate releases. Neither is an artifact of the other.
 **tgz**: run `npm run pack:plugin` for `dist/hikari-rento-<version>.tgz`, or use the release asset.
 
 **npm**: the plugin is on the registry as [`hikari-rento`](https://www.npmjs.com/package/hikari-rento).
-Check `npm view hikari-rento version` for whether 2.0.0 is published; otherwise use the local directory or tgz.
+Check `npm view hikari-rento version` for whether 2.1.0 is published; otherwise use the local directory or tgz.
 
 Restart the client afterwards, then **open a new session**. See [the install guide](docs/install.md).
 
