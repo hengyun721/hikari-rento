@@ -46,6 +46,38 @@ const tableProtected = voice.protectText(tableText);
 assert.equal(voice.restoreText(tableProtected.text, tableProtected), tableText);
 assert.ok(!tableProtected.text.includes('| 项目 |'));
 assert.ok(tableProtected.text.includes('⟦P0⟧'));
+const tableContext = voice.renderProtectedContext(tableProtected);
+assert.ok(tableContext.includes('类型：table'));
+assert.ok(tableContext.includes('| 项目 |'));
+const tableEditor = voice.buildEditorRequest(tableText, true);
+assert.ok(tableEditor.user.includes('受保护片段'));
+assert.ok(tableEditor.user.includes('| 项目 |'));
+
+async function* tableStream() {
+  yield { type: 'text-delta', index: 0, text: tableText };
+  yield { type: 'finish', reason: { kind: 'stop' } };
+}
+const leakedTable = [];
+for await (const chunk of voice.wrapFinalAnswer(
+  {
+    llm: {
+      async *stream() {
+        yield {
+          type: 'text-delta',
+          index: 0,
+          text: '前面一段。⟦P0⟧\n| 项目 | 值 |\n|---|---|\n| A | 1 |\n后面一段。'
+        };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      }
+    }
+  },
+  { sessionId: 's1' },
+  tableStream
+)) {
+  leakedTable.push(chunk);
+}
+const leakedText = leakedTable.find((chunk) => chunk.type === 'text-delta')?.text;
+assert.equal(leakedText, tableText);
 
 const rewritten = protectedData.text
   .replace('已完成。', '搞定了。')

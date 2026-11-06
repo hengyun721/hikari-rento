@@ -320,6 +320,7 @@ const VOICE_RULES = [
   '硬规则：',
   '- 不得新增、删除或改变任何事实、数字、路径、命令、代码、文件名、结论、步骤、风险、警告、引用。',
   '- 原文里的 ⟦P0⟧ 形式是受保护片段，必须原样保留；不要改写、删除、移动或新增占位符。',
+  '- 【受保护片段】清单只是只读上下文，不是正文；不要把它复制进输出，也不要根据它改写正文事实。',
   '- 保留 Markdown 结构、标题、列表、表格、代码块、链接。',
   '- 不要解释自己在编辑，不要输出前言、后记或“作为恋兔光”之类的话。',
   '- 这是最终回答，不是工具步骤；除代码、命令、路径等受保护片段外，正文都要用恋兔光口吻。',
@@ -343,38 +344,48 @@ export function protectText(text) {
   let tag = '⟦P';
   while (text.includes(tag)) tag += 'Q';
   const patterns = [
-    /```[\s\S]*?```/g,
-    /`[^`\n]+`/g,
-    /https?:\/\/[^\s<>"'）)]+/g,
-    /[A-Za-z]:[\\/][^\s，。；：、）)]+/g,
-    /(?:~|\.{1,2})?\/[^\s，。；：、）)]+/g,
-    /\b[\w.-]+\.(?:md|json|jsonl|js|mjs|cjs|ts|tsx|jsx|py|go|rs|java|c|cc|cpp|h|hpp|cs|exe|zip|tar|gz|png|jpe?g|webp|svg|yaml|yml|toml|txt|csv|xlsx|docx|pdf)\b/gi,
-    // 整张 Markdown 表格作为一个不可改写片段，避免编辑模型动表头/单元格/列。
-    /(?:^|\n)(?:[ \t]*\|.*\|[ \t]*(?:\n|$))+/g,
-    // 只保护有单位/有指代的事实数字；裸数字留给模型保留，靠后续校验兜底。
-    /(?:第|图|表|式|页|章|节)\s*\d+(?:\.\d+)?/g,
-    /\b\d+(?:\.\d+)?\s*(?:%|‰|°C|℃|V|mV|uV|A|mA|uA|Ω|kΩ|MΩ|Hz|kHz|MHz|GHz|s|ms|us|ns|mm|cm|km|m|g|kg|mg|dB|bit|Byte|B|KB|MB|GB|TB|W|kW|mW|F|uF|nF|pF|H|mH|uH|rpm|r\/min)\b/gi,
-    /\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b/g,
-    /\b\d{1,2}:\d{2}(?::\d{2})?\b/g
+    { kind: 'code', re: /```[\s\S]*?```/g },
+    { kind: 'inline-code', re: /`[^`\n]+`/g },
+    { kind: 'link', re: /!?\[[^\]\n]*\]\([^)\n]+\)/g },
+    { kind: 'url', re: /https?:\/\/[^\s<>"'）)]+/g },
+    { kind: 'email', re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g },
+    { kind: 'ip', re: /\b\d{1,3}(?:\.\d{1,3}){3}\b/g },
+    { kind: 'path', re: /[A-Za-z]:[\\/][^\s，。；：、）)]+/g },
+    { kind: 'path', re: /\\\\[^\s，。；：、）)]+/g },
+    { kind: 'path', re: /(?:~|\.{1,2})?\/[^\s，。；：、）)]+/g },
+    { kind: 'html-table', re: /<table[\s\S]*?<\/table>/gi },
+    { kind: 'table', re: /(?:^|\n)(?:[ \t]*\|.*\|[ \t]*(?:\n|$))+/g },
+    { kind: 'filename', re: /\b[\w.-]+\.(?:md|json|jsonl|js|mjs|cjs|ts|tsx|jsx|py|go|rs|java|c|cc|cpp|h|hpp|cs|exe|zip|tar|gz|png|jpe?g|webp|svg|yaml|yml|toml|txt|csv|xlsx|docx|pdf|html?|css|scss|vue|svelte|sql|db|sqlite|ipynb|env|log|ini|cfg|xml)\b/gi },
+    { kind: 'secret', re: /\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b/g },
+    { kind: 'secret', re: /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/g },
+    { kind: 'math', re: /\$\$[\s\S]*?\$\$|\$[^$\n]+\$/g },
+    { kind: 'label', re: /(?:第|图|表|式|页|章|节)\s*\d+(?:\.\d+)?/g },
+    { kind: 'quantity', re: /\b\d+(?:\.\d+)?\s*(?:%|‰|°C|℃|V|mV|uV|A|mA|uA|Ω|kΩ|MΩ|Hz|kHz|MHz|GHz|s|ms|us|ns|mm|cm|km|m|g|kg|mg|dB|bit|Byte|B|KB|MB|GB|TB|W|kW|mW|F|uF|nF|pF|H|mH|uH|rpm|r\/min)\b/gi },
+    { kind: 'date', re: /\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b/g },
+    { kind: 'time', re: /\b\d{1,2}:\d{2}(?::\d{2})?\b/g }
   ];
   const ranges = [];
-  for (const pattern of patterns) {
-    for (const match of text.matchAll(pattern)) {
-      ranges.push([match.index, match.index + match[0].length]);
+  for (const { kind, re } of patterns) {
+    for (const match of text.matchAll(re)) {
+      ranges.push({ start: match.index, end: match.index + match[0].length, kind });
     }
   }
-  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  ranges.sort((a, b) => a.start - b.start || a.end - b.end);
   const spans = [];
+  const entries = [];
   let out = '';
   let cursor = 0;
-  for (const [start, end] of ranges) {
+  for (const { start, end, kind } of ranges) {
     if (start < cursor) continue;
-    out += text.slice(cursor, start) + `${tag}${spans.length}⟧`;
-    spans.push(text.slice(start, end));
+    const value = text.slice(start, end);
+    const index = spans.length;
+    out += text.slice(cursor, start) + `${tag}${index}⟧`;
+    spans.push(value);
+    entries.push({ index, kind, text: value });
     cursor = end;
   }
   out += text.slice(cursor);
-  return { text: out, spans, tag };
+  return { text: out, spans, entries, tag };
 }
 
 /**
@@ -410,6 +421,18 @@ function countNumbers(text) {
     counts.set(match[0], (counts.get(match[0]) || 0) + 1);
   }
   return counts;
+}
+
+function countOccurrences(text, needle) {
+  if (!needle) return 0;
+  let count = 0;
+  let cursor = 0;
+  while (true) {
+    const found = text.indexOf(needle, cursor);
+    if (found < 0) return count;
+    count += 1;
+    cursor = found + needle.length;
+  }
 }
 
 /**
@@ -495,6 +518,34 @@ export function splitSegments(text, maxLen = 1500) {
 }
 
 /**
+ * 给编辑模型一份只读的受保护片段清单，让它知道被藏起来的是什么，但不能改写。
+ * @param protectedData - protectText() 的返回值。
+ * @param maxChars - 清单总长度上限。
+ * @returns 只读上下文文本。
+ */
+export function renderProtectedContext(protectedData, maxChars = 3000) {
+  const entries = protectedData.entries ?? [];
+  if (entries.length === 0) return '';
+  const lines = ['【受保护片段（只读上下文，不是正文；禁止改写、复制或移动占位符）】'];
+  let used = 0;
+  for (const entry of entries) {
+    let content = entry.text;
+    if (entry.kind === 'code' || entry.kind === 'table' || entry.kind === 'html-table') {
+      const limit = entry.kind === 'code' ? 500 : 1800;
+      if (content.length > limit) content = `${content.slice(0, limit)}\n…（已截断，共 ${entry.text.length} 字）`;
+    }
+    const block = `⟦P${entry.index}⟧ 类型：${entry.kind}\n${content}`;
+    if (used + block.length > maxChars) {
+      lines.push(`…还有 ${entries.length - entry.index} 个受保护片段未展开`);
+      break;
+    }
+    lines.push(block);
+    used += block.length;
+  }
+  return lines.join('\n\n');
+}
+
+/**
  * 生成文风编辑请求。
  * @param original - 原始最终回答。
  * @param fewShotEnabled - 是否附示例台词。
@@ -502,9 +553,10 @@ export function splitSegments(text, maxLen = 1500) {
  */
 export function buildEditorRequest(original, fewShotEnabled = true) {
   const protectedData = protectText(original);
+  const context = renderProtectedContext(protectedData);
   return {
     system: `${VOICE_RULES}\n\n【恋兔光的声音】\n\n${renderVoiceGuide(fewShotEnabled)}`,
-    user: `【最终回答】\n${protectedData.text}`,
+    user: `【最终回答】\n${protectedData.text}${context ? `\n\n${context}` : ''}`,
     protectedData
   };
 }
@@ -573,6 +625,12 @@ async function editFinalAnswer(ctx, options, original, fewShotEnabled) {
   }
   const restored = restoreText(raw.trim(), protectedData);
   if (restored === null) return fail(ctx, 'placeholder restore failed', meta);
+  for (const entry of protectedData.entries ?? []) {
+    if (entry.text.length < 12) continue;
+    if (countOccurrences(restored, entry.text) > countOccurrences(original, entry.text)) {
+      return fail(ctx, 'protected content duplicated outside placeholder', { ...meta, kind: entry.kind });
+    }
+  }
   if (!validateRewrite(original, restored)) {
     return fail(ctx, 'local validation failed', { ...meta, outputChars: restored.length });
   }
@@ -789,6 +847,7 @@ export const voice = {
   renderWorkPolicy,
   renderVoiceGuide,
   buildEditorRequest,
+  renderProtectedContext,
   splitSegments,
   verifyRewrite,
   wrapFinalAnswer
