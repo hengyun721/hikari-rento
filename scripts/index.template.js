@@ -37,6 +37,21 @@ const DETAIL_SECTIONS = @@DETAIL@@;
 /** 少样本示例。 */
 const FEW_SHOT = @@FEWSHOT@@;
 
+const TECH_FEW_SHOT = [
+  {
+    situation: '故障复盘开场',
+    line: '行，本恋兔光大人看完了。结论先说：不是下游挂了，是网关自己没接上。'
+  },
+  {
+    situation: '技术状态中段',
+    line: '这流水线漏得跟没戴手套接球一样——缓存键不看源码，构建失败还被 || true 吞了。'
+  },
+  {
+    situation: '技术回答收尾',
+    line: '别把运气当成本事啦。下次再让旧产物混上线，我可真要生气了哦。'
+  }
+];
+
 /** 参考档案目录（references/）的绝对路径，随插件安装位置自动解析。 */
 const REFERENCES_DIR = fileURLToPath(new URL('./references/', import.meta.url));
 
@@ -115,6 +130,12 @@ export function renderVoiceGuide(fewShotEnabled = true) {
       .join('\n');
     parts.push(`【示例台词】\n${examples}`);
   }
+  if (fewShotEnabled && TECH_FEW_SHOT.length > 0) {
+    const technical = TECH_FEW_SHOT
+      .map((example) => `- （${example.situation}）${example.line}`)
+      .join('\n');
+    parts.push(`【技术场景示例】\n${technical}`);
+  }
   return parts.join('\n\n');
 }
 
@@ -128,6 +149,8 @@ const VOICE_RULES = [
   '- 保留 Markdown 结构、标题、列表、表格、代码块、链接。',
   '- 不要解释自己在编辑，不要输出前言、后记或“作为恋兔光”之类的话。',
   '- 这是最终回答，不是工具步骤；除代码、命令、路径等受保护片段外，正文都要用恋兔光口吻。',
+  '- 不要只加句尾语气词；一篇回答至少有一个开头、一个中段或一个结尾的恋兔光锚点，但不要每句都加口癖。',
+  '- 锚点可以是她式的自夸、短句、游戏/棒球比喻、拖长音或带关心的收束；技术回答先给准确结论，再加锚点，不要为了人设新增事实。',
   '- 可以加入非事实性的主观评价（情绪、判断、吐槽），但不能新增、删除或改变事实、结论、风险、步骤、数字、路径、命令或引用。',
   '- 如果无法在不改变事实的情况下改写，原样输出输入。',
   '只输出改写后的回答。'
@@ -140,6 +163,17 @@ const FACT_CHECK_RULES = [
   '出现以下任一情况就输出 FAIL：新增、删除或改变事实、数字、路径、命令、代码、文件名、结论、步骤、风险、警告、关系或不确定性。',
   '注意：纯主观评价（如“这堆路径看得我眼花”“这次挺麻烦”）不算新事实；但如果评价暗示了新的客观结论（如“系统已修复”“不会出问题”），按事实变更处理。',
   '只有事实层完全一致时才输出 PASS。'
+].join('\n');
+
+const POLISH_RULES = [
+  '你是恋兔光的文风收尾编辑。输入是一篇已经改写过的最终回答。',
+  '只做轻量收尾：最多调整开头一句、结尾一句和重复的过渡；补一到两个恋兔光锚点。',
+  '不要重写正文，不要改变任何事实、数字、路径、命令、代码、文件名、结论、步骤、风险、警告、引用。',
+  '不要只加句尾语气词；但也不要每句都加口癖，锚点要自然。',
+  '原文里的 ⟦P0⟧ 形式是受保护片段，必须原样保留；不要复制、改写、移动或新增占位符。',
+  '保留 Markdown 结构、标题、列表、表格、代码块、链接。',
+  '如果无法在不改变事实的情况下收尾，原样输出输入。',
+  '只输出收尾后的回答。'
 ].join('\n');
 
 /**
@@ -471,7 +505,61 @@ function isToolChunk(chunk) {
     (chunk.type === 'block-start' && chunk.blockType === 'tool-call');
 }
 
-async function* rewriteTextBlock(ctx, options, record, fewShotEnabled) {
+async function polishAnswer(ctx, options, original, fewShotEnabled) {
+  if (typeof ctx.llm?.stream !== 'function') return null;
+  const protectedData = protectText(original);
+  const context = renderProtectedContext(protectedData);
+  const meta = { chars: original.length, placeholders: protectedData.spans.length };
+  let raw = '';
+  let sawDelta = false;
+  try {
+    for await (const chunk of ctx.llm.stream({
+      provider: options.provider,
+      model: options.model,
+      system: `${POLISH_RULES}\n\n【恋兔光的声音】\n\n${renderVoiceGuide(fewShotEnabled)}`,
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'text',
+          text: `【已改写回答】\n${protectedData.text}${context ? `\n\n${context}` : ''}`
+        }]
+      }],
+      maxTokens: 16384,
+      signal: options.signal
+    })) {
+      if (chunk.type === 'tool-call-delta') return fail(ctx, 'polish returned a tool call', meta);
+      if (chunk.type === 'text-delta') {
+        raw += chunk.text;
+        sawDelta = true;
+      }
+      if (chunk.type === 'block-end' && !sawDelta && chunk.block?.type === 'text') {
+        raw += chunk.block.text ?? '';
+      }
+      if (chunk.type === 'finish') {
+        if (chunk.reason?.kind !== 'stop') return fail(ctx, 'polish finish was not stop', { ...meta, reason: chunk.reason?.kind });
+        break;
+      }
+    }
+  } catch (error) {
+    return fail(ctx, 'polish threw', { ...meta, error: String(error) });
+  }
+  const restored = restoreText(raw.trim(), protectedData);
+  if (restored === null) return fail(ctx, 'polish placeholder restore failed', meta);
+  for (const entry of protectedData.entries ?? []) {
+    if (entry.text.length < 12) continue;
+    if (countOccurrences(restored, entry.text) > countOccurrences(original, entry.text)) {
+      return fail(ctx, 'polish protected content duplicated', { ...meta, kind: entry.kind });
+    }
+  }
+  if (!validateRewrite(original, restored)) return fail(ctx, 'polish local validation failed', meta);
+  if (!(await verifyRewrite(ctx, options, original, restored))) {
+    return fail(ctx, 'polish fact check failed', meta);
+  }
+  debugLog(ctx, 'voice polish accepted', meta);
+  return restored;
+}
+
+async function* rewriteTextBlock(ctx, options, record, fewShotEnabled, polish = false) {
   if (!record.text.trim()) {
     if (record.start) yield record.start;
     for (const delta of record.deltas) yield delta;
@@ -482,10 +570,11 @@ async function* rewriteTextBlock(ctx, options, record, fewShotEnabled) {
   debugLog(ctx, 'voice rewrite block', {
     index: record.index,
     chars: record.text.length,
-    segments: segments.length
+    segments: segments.length,
+    polish
   });
-  if (record.start) yield record.start;
   let finalText = '';
+  const pieces = [];
   let cursor = 0;
   for (const segment of segments) {
     const start = record.text.indexOf(segment, cursor);
@@ -499,13 +588,26 @@ async function* rewriteTextBlock(ctx, options, record, fewShotEnabled) {
       : null;
     const piece = gap + leading + (edited ?? core) + trailing;
     finalText += piece;
-    yield { type: 'text-delta', index: record.index, text: piece };
+    pieces.push(piece);
     cursor = safeStart + segment.length;
   }
   const tail = record.text.slice(cursor);
   if (tail) {
     finalText += tail;
-    yield { type: 'text-delta', index: record.index, text: tail };
+    pieces.push(tail);
+  }
+
+  let polished = null;
+  if (polish && finalText.length >= 1500) {
+    polished = await polishAnswer(ctx, options, finalText, fewShotEnabled);
+    if (polished !== null) finalText = polished;
+  }
+
+  if (record.start) yield record.start;
+  if (polished !== null) {
+    yield { type: 'text-delta', index: record.index, text: finalText };
+  } else {
+    for (const piece of pieces) yield { type: 'text-delta', index: record.index, text: piece };
   }
   if (record.end) {
     yield { ...record.end, block: { ...record.end.block, text: finalText } };
@@ -571,12 +673,13 @@ function wrapFinalAnswer(ctx, options, next, fewShotEnabled) {
     }
 
     const emitted = new Set();
+    const singleBlock = textBlocks.size === 1;
     for (const chunk of chunks) {
       if (isTextChunk(chunk)) {
         const record = textBlocks.get(chunk.index);
         if (!record || emitted.has(record.index)) continue;
         emitted.add(record.index);
-        yield* rewriteTextBlock(ctx, options, record, fewShotEnabled);
+        yield* rewriteTextBlock(ctx, options, record, fewShotEnabled, singleBlock);
         continue;
       }
       yield chunk;
