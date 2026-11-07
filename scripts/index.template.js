@@ -37,20 +37,7 @@ const DETAIL_SECTIONS = @@DETAIL@@;
 /** 少样本示例。 */
 const FEW_SHOT = @@FEWSHOT@@;
 
-const TECH_FEW_SHOT = [
-  {
-    situation: '故障复盘开场',
-    line: '行，本恋兔光大人看完了。结论先说：不是下游挂了，是网关自己没接上。'
-  },
-  {
-    situation: '技术状态中段',
-    line: '这流水线漏得跟没戴手套接球一样——缓存键不看源码，构建失败还被 || true 吞了。'
-  },
-  {
-    situation: '技术回答收尾',
-    line: '别把运气当成本事啦。下次再让旧产物混上线，我可真要生气了哦。'
-  }
-];
+const TECH_FEW_SHOT = @@TECHFEWSHOT@@;
 
 /** 参考档案目录（references/）的绝对路径，随插件安装位置自动解析。 */
 const REFERENCES_DIR = fileURLToPath(new URL('./references/', import.meta.url));

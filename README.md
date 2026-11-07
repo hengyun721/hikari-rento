@@ -52,10 +52,22 @@
 `hikari-rento-skill-<version>.tgz`：
 
 ```bash
-tar -xzf hikari-rento-skill-1.0.2.tgz -C ~/.claude/skills/
+tar -xzf hikari-rento-skill-1.1.0.tgz -C ~/.claude/skills/
 ```
 
 然后新开一个会话，说「恋兔光模式」。
+
+### Skill 在 Claude Code / Codex 里的建议
+
+skill 是**提示词级**发行，不会自动保护代码/表格或做事实校验；它能提供人设、知识边界和“交付前自检”流程。
+
+- **Claude Code**：放到 `~/.claude/skills/hikari-rento/`（用户级）或 `.claude/skills/hikari-rento/`（项目级），新会话说「恋兔光模式」。
+- **Codex**：放到当前版本的 skill/agent 目录；如果没有自动加载，在项目 `AGENTS.md` 写明「遇到恋兔光模式先读 `.skills/hikari-rento/SKILL.md`」。
+- **其他 agent**：把目录放进宿主 skills 目录，或用一段短 wrapper 指向 `SKILL.md`，不要把全文反复粘进每次对话。
+- **长任务**：先声明「工作过程保持正常工程语气，最终回答再转换口吻」；技术结论先准确，代码/表格/路径不要改。
+- **需要运行时审查**：用 `hikari-rento` 插件 2.1.0，或接 finalizer/MCP；不要指望 skill 自己保证。
+
+详细说明见 [`packages/skill/README.md`](packages/skill/README.md)。
 
 ### 装完请「新建会话」
 

@@ -140,7 +140,8 @@ function renderPlugin(template, character, pkgName) {
     .replace('@@PACKAGE@@', pkgName)
     .replace('@@CHARACTER@@', block(embedded))
     .replace('@@DETAIL@@', block(DETAIL))
-    .replace('@@FEWSHOT@@', block(character.fewShot ?? []));
+    .replace('@@FEWSHOT@@', block(character.fewShot ?? []))
+    .replace('@@TECHFEWSHOT@@', block(character.technicalFewShot ?? []));
 
   if (out.includes('@@')) throw new Error('placeholder substitution left a @@ marker behind');
   return out;
@@ -157,6 +158,9 @@ function renderSkill(character) {
     '或点名她来闲聊、干活时使用。人设、口癖与知识边界自包含在 SKILL.md 与 references/ 内。';
 
   const body = SKILL_SECTIONS.map((key) => character.sections[key].trim()).join('\n\n');
+  const technical = (character.technicalFewShot ?? [])
+    .map((example) => `- （${example.situation}）${example.line}`)
+    .join('\n');
 
   return `---
 name: hikari-rento
@@ -196,6 +200,22 @@ description: ${description}
 
 纪律：一次只读一份；读到的只当依据，不许复述；标签写着〔不知〕的照样不许说；
 问「那次／那场」时先按 \`references/persona.md\` 的经历索引确认她在不在场。
+
+## 最终回答协议（重要）
+
+本技能是**提示词级**，不能像 DSH 插件那样在运行时自动保护、校验或回退最终回答；下面是你必须自己执行的流程，不是宿主保证。
+
+1. **先准确**：结论、数字、路径、命令、表格、代码先保持原样；不要为了口吻改事实、改结论或补设定。
+2. **再说话**：技术回答也先给准确结论，再加她的语气；不要写成客服腔。
+3. **锚点要克制**：一篇回答最多放一到两个自然锚点（开头、中段或结尾）；不要每句加口癖，也不要只用句尾「哦」交差。
+4. **文件/代码原样**：表格、代码块、路径、命令、文件名、URL 不塞角色口癖；只改它们周围的说明文字。
+5. **交付前自检**：事实有没有变？表格/代码有没有被改？是不是只加了一个语气词？不知道的身份有没有被反推成「不是」？
+6. **不知道就说不知道**：档案没写的身份或归属，不许反推成「不是」；露娜是终末，这条要直接确认。
+7. **技术任务可以长**：工程/技术回答信息完整优先，不受“日常一到两句”的限制；只有闲聊才压缩到一两句。
+
+### 技术场景示例
+
+${technical || '- （暂无）'}
 
 ---
 
@@ -298,6 +318,35 @@ tar -xzf hikari-rento-skill-${version}.tgz -C ~/.claude/skills/
 \`\`\`
 
 然后新开一个会话，说「恋兔光模式」试一句。
+
+## 在 Claude Code / Codex 里怎么用
+
+这是一个**提示词级 skill**，不是 DSH 插件：它没有 \`llm/stream\` 钩子，不能自动保护代码/表格或做事实校验。它的“交付前自检”是写给模型的流程，不是宿主保证。
+
+| 平台 | 放置与触发 | 建议 |
+|---|---|---|
+| **Claude Code** | 放到用户级 \`~/.claude/skills/hikari-rento/\`，或项目级 \`.claude/skills/hikari-rento/\`；新会话里说「恋兔光模式」 | 让 skill 按 description 自动加载；如果没触发，直接说「读取 hikari-rento 的 SKILL.md，然后按恋兔光模式回答」 |
+| **Codex** | 按当前 Codex 版本的 skill/agent 目录放置；没有自动加载时，在项目 \`AGENTS.md\` 里写一句「遇到恋兔光模式先读 \`.skills/hikari-rento/SKILL.md\`」 | Codex 更依赖显式指令；开头直接说「先读 SKILL.md 和 references，再回答」 |
+| **其他 agent** | 把本目录放到宿主的 skills 目录，或在系统提示里引用 \`SKILL.md\` | 不支持 skill 自动加载时，用一段短 wrapper 指向 \`SKILL.md\`，不要把全文反复粘进每次对话 |
+
+推荐开场：
+
+\`\`\`text
+恋兔光模式。先读 SKILL.md；技术结论要准确，代码、表格、路径不要改，
+最后用你的口吻总结。交付前按 SKILL.md 的“最终回答协议”自检。
+\`\`\`
+
+长任务再加一句：
+
+\`\`\`text
+工作过程保持正常工程语气；最终回答再转换口吻。
+\`\`\`
+
+## 能力边界
+
+- **有**：人设、口癖、知识边界、技术回答锚点、交付前自检流程。
+- **没有**：自动占位符保护、数字/结构校验、事实校验、分段失败回退、\`DSH_HIKARI_DEBUG\`。
+- 需要和插件 2.1.0 同级的运行时审查时，使用 DSH 插件，或在宿主里接一个 finalizer/MCP 工具；不要指望 skill 自己保证。
 
 ## 内容
 

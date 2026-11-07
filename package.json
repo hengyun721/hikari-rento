@@ -19,7 +19,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "node scripts/build.mjs --check",
-    "test": "node scripts/self-check.mjs && node scripts/voice-test.mjs",
+    "test": "node scripts/self-check.mjs && node scripts/voice-test.mjs && node scripts/skill-check.mjs",
     "verify": "npm run check && npm test && npm run privacy",
     "pack:plugin": "node scripts/package-plugin.mjs",
     "pack:skill": "node scripts/package-skill.mjs",

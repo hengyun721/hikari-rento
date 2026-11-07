@@ -10,4 +10,4 @@
 
 若权利人认为内容越界，请联系维护者，相关文本会在确认后移除。
 
-版本 1.0.4 · 源码与完整说明：https://github.com/hengyun721/hikari-rento
+版本 1.1.0 · 源码与完整说明：https://github.com/hengyun721/hikari-rento
